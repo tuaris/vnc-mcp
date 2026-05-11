@@ -190,9 +190,10 @@ pub const McpServer = struct {
     }
 
     fn handleInitialize(self: *McpServer, id: ?JsonValue) !void {
-        const response = try std.fmt.allocPrint(self.allocator,
-            \\{{"jsonrpc":"2.0","id":{s},"result":{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"vnc-mcp-server","version":"0.1.0"}},"instructions":"VNC remote desktop control server. Use vnc_list_endpoints to see available machines. Use vnc_screenshot to capture the screen. All tools accept an optional 'endpoint' parameter to target a specific machine."}}}}
-        , .{try self.formatId(id)});
+        const id_str = try self.formatId(id);
+        defer self.allocator.free(id_str);
+
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.1.0\"}},\"instructions\":\"VNC remote desktop control server. Use vnc_list_endpoints to see available machines. Use vnc_screenshot to capture the screen. All tools accept an optional 'endpoint' parameter to target a specific machine.\"}}}}", .{id_str});
         defer self.allocator.free(response);
 
         try self.writeLine(response);
@@ -204,9 +205,7 @@ pub const McpServer = struct {
         const id_str = try self.formatId(id);
         defer self.allocator.free(id_str);
 
-        const response = try std.fmt.allocPrint(self.allocator,
-            \\{{"jsonrpc":"2.0","id":{s},"result":{{"tools":{s}}}}}
-        , .{ id_str, tools_json });
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"tools\":{s}}}}}", .{ id_str, tools_json });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
@@ -252,9 +251,7 @@ pub const McpServer = struct {
         const content_json = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(content, .{})});
         defer self.allocator.free(content_json);
 
-        const response = try std.fmt.allocPrint(self.allocator,
-            \\{{"jsonrpc":"2.0","id":{s},"result":{s}}}
-        , .{ id_str, content_json });
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}", .{ id_str, content_json });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
@@ -268,9 +265,7 @@ pub const McpServer = struct {
         const escaped = try jsonEscape(self.allocator, message);
         defer self.allocator.free(escaped);
 
-        const response = try std.fmt.allocPrint(self.allocator,
-            \\{{"jsonrpc":"2.0","id":{s},"result":{{"content":[{{"type":"text","text":"{s}"}}],"isError":true}}}}
-        , .{ id_str, escaped });
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}],\"isError\":true}}}}", .{ id_str, escaped });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
@@ -280,9 +275,7 @@ pub const McpServer = struct {
         const id_str = try self.formatId(id);
         defer self.allocator.free(id_str);
 
-        const response = try std.fmt.allocPrint(self.allocator,
-            \\{{"jsonrpc":"2.0","id":{s},"error":{{"code":{d},"message":"{s}"}}}}
-        , .{ id_str, code, message });
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ id_str, code, message });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
@@ -295,9 +288,7 @@ pub const McpServer = struct {
         const result_json = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(result, .{})});
         defer self.allocator.free(result_json);
 
-        const response = try std.fmt.allocPrint(self.allocator,
-            \\{{"jsonrpc":"2.0","id":{s},"result":{s}}}
-        , .{ id_str, result_json });
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}", .{ id_str, result_json });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
