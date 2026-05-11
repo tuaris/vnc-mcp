@@ -273,7 +273,11 @@ pub const Client = struct {
         self.width = std.mem.readInt(u16, init_buf[0..2], .big);
         self.height = std.mem.readInt(u16, init_buf[2..4], .big);
         const server_pf = protocol.PixelFormat.decode(init_buf[4..20]);
-        _ = server_pf;
+        log.info("server pixel format: {d}bpp depth={d} be={} tc={} rmax={d} gmax={d} bmax={d} rs={d} gs={d} bs={d}", .{
+            server_pf.bits_per_pixel, server_pf.depth, server_pf.big_endian, server_pf.true_colour,
+            server_pf.red_max, server_pf.green_max, server_pf.blue_max,
+            server_pf.red_shift, server_pf.green_shift, server_pf.blue_shift,
+        });
 
         const name_len = std.mem.readInt(u32, init_buf[20..24], .big);
         if (name_len > 0) {
@@ -294,8 +298,9 @@ pub const Client = struct {
 
         log.info("connected: {d}x{d} \"{s}\"", .{ self.width, self.height, self.server_name[0..self.server_name_len] });
 
-        // Set our preferred pixel format (RGB888, little-endian, 32bpp)
-        try self.setPixelFormat(protocol.PixelFormat.default_rgb888);
+        // Explicitly set pixel format — use server's native format but send
+        // SetPixelFormat to confirm (TightVNC requires explicit confirmation)
+        try self.setPixelFormat(server_pf);
 
         // Set encodings (Raw only for now)
         try self.setEncodings(&[_]protocol.EncodingType{.raw});
@@ -396,16 +401,12 @@ pub const Client = struct {
         // header[0] = padding
         const num_rects = std.mem.readInt(u16, header[1..3], .big);
 
-        log.info("framebuffer update: {d} rectangles", .{num_rects});
-
         const fb = &(self.framebuffer orelse return error.FramebufferNotReady);
 
-        for (0..num_rects) |ri| {
+        for (0..num_rects) |_| {
             var rect_buf: [12]u8 = undefined;
             try self.readExact(&rect_buf);
             const rect = protocol.RectHeader.decode(&rect_buf);
-
-            log.info("  rect[{d}]: {d}x{d} at ({d},{d}) enc={}", .{ ri, rect.width, rect.height, rect.x, rect.y, rect.encoding });
 
             switch (rect.encoding) {
                 .raw => {
@@ -417,13 +418,6 @@ pub const Client = struct {
                 },
             }
         }
-
-        // Debug: count non-zero bytes in framebuffer
-        var nonzero: usize = 0;
-        for (fb.data) |b| {
-            if (b != 0) nonzero += 1;
-        }
-        log.info("framebuffer: {d}/{d} non-zero bytes", .{ nonzero, fb.data.len });
     }
 
     fn skipColourMapEntries(self: *Client) ClientError!void {
@@ -453,8 +447,17 @@ pub const Client = struct {
 
     /// Capture the current framebuffer as a screenshot
     pub fn screenshot(self: *Client) ClientError!*const Framebuffer {
+        // First request: non-incremental to seed the framebuffer
         try self.requestUpdate(false);
         try self.receiveUpdate();
+
+        // Brief delay for screen capture driver to populate
+        std.Thread.sleep(200 * std.time.ns_per_ms);
+
+        // Second request: get the actual current screen
+        try self.requestUpdate(false);
+        try self.receiveUpdate();
+
         return &(self.framebuffer orelse return error.FramebufferNotReady);
     }
 
