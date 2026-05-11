@@ -1,0 +1,13 @@
+{
+  "endpoints": [
+    {
+      "id": "win11-dev",
+      "description": "Windows 11 development VM",
+      "host": "192.168.1.195",
+      "port": 5900,
+      "password_file": "/home/admin/.vnc-password",
+      "helper_port": 9800,
+      "default": true
+    }
+  ]
+}

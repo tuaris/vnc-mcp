@@ -1,0 +1,127 @@
+[
+  {
+    "name": "vnc_screenshot",
+    "description": "Capture a screenshot of the remote desktop. Returns a JPEG image encoded as base64. Use this to see what is currently displayed on the screen.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "description": "Endpoint ID to capture from. If omitted, uses the default endpoint."
+        },
+        "quality": {
+          "type": "integer",
+          "description": "JPEG quality 1-100. Default: 75.",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    }
+  },
+  {
+    "name": "vnc_click",
+    "description": "Click at a specific screen position. Supports left, right, and middle mouse buttons, and double-click.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "integer", "description": "X coordinate" },
+        "y": { "type": "integer", "description": "Y coordinate" },
+        "button": {
+          "type": "string",
+          "enum": ["left", "right", "middle"],
+          "description": "Mouse button. Default: left."
+        },
+        "double": {
+          "type": "boolean",
+          "description": "Double-click. Default: false."
+        },
+        "endpoint": { "type": "string", "description": "Endpoint ID" }
+      },
+      "required": ["x", "y"]
+    }
+  },
+  {
+    "name": "vnc_type_text",
+    "description": "Type a string of text on the remote desktop using direct keysym events. Each character is sent as its exact Unicode keysym — no shift-key workarounds needed. For special characters that may not work reliably, use vnc_paste_text instead.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "Text to type" },
+        "endpoint": { "type": "string", "description": "Endpoint ID" }
+      },
+      "required": ["text"]
+    }
+  },
+  {
+    "name": "vnc_key_press",
+    "description": "Press a key or key combination (e.g., 'Return', 'ctrl+c', 'alt+F4', 'shift+a'). Key names follow X11 keysym names.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "keys": { "type": "string", "description": "Key or combo like 'Return', 'ctrl+c', 'alt+F4'" },
+        "endpoint": { "type": "string", "description": "Endpoint ID" }
+      },
+      "required": ["keys"]
+    }
+  },
+  {
+    "name": "vnc_move_mouse",
+    "description": "Move the mouse cursor to a position without clicking.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "integer", "description": "X coordinate" },
+        "y": { "type": "integer", "description": "Y coordinate" },
+        "endpoint": { "type": "string", "description": "Endpoint ID" }
+      },
+      "required": ["x", "y"]
+    }
+  },
+  {
+    "name": "vnc_drag",
+    "description": "Click and drag from one position to another. Holds the left mouse button down during the move.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x1": { "type": "integer", "description": "Start X" },
+        "y1": { "type": "integer", "description": "Start Y" },
+        "x2": { "type": "integer", "description": "End X" },
+        "y2": { "type": "integer", "description": "End Y" },
+        "endpoint": { "type": "string", "description": "Endpoint ID" }
+      },
+      "required": ["x1", "y1", "x2", "y2"]
+    }
+  },
+  {
+    "name": "vnc_clipboard_set",
+    "description": "Send text to the remote clipboard via VNC ClientCutText.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "Text to place on remote clipboard" },
+        "endpoint": { "type": "string", "description": "Endpoint ID" }
+      },
+      "required": ["text"]
+    }
+  },
+  {
+    "name": "vnc_paste_text",
+    "description": "Reliable text entry: sets the remote clipboard then sends Ctrl+V. Use this for special characters, URLs, or any text that vnc_type_text might mangle.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "Text to paste" },
+        "endpoint": { "type": "string", "description": "Endpoint ID" }
+      },
+      "required": ["text"]
+    }
+  },
+  {
+    "name": "vnc_list_endpoints",
+    "description": "List all registered VNC endpoints with their descriptions and connection status.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  }
+]
