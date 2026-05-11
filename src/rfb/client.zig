@@ -396,12 +396,16 @@ pub const Client = struct {
         // header[0] = padding
         const num_rects = std.mem.readInt(u16, header[1..3], .big);
 
+        log.info("framebuffer update: {d} rectangles", .{num_rects});
+
         const fb = &(self.framebuffer orelse return error.FramebufferNotReady);
 
-        for (0..num_rects) |_| {
+        for (0..num_rects) |ri| {
             var rect_buf: [12]u8 = undefined;
             try self.readExact(&rect_buf);
             const rect = protocol.RectHeader.decode(&rect_buf);
+
+            log.info("  rect[{d}]: {d}x{d} at ({d},{d}) enc={}", .{ ri, rect.width, rect.height, rect.x, rect.y, rect.encoding });
 
             switch (rect.encoding) {
                 .raw => {
@@ -413,6 +417,13 @@ pub const Client = struct {
                 },
             }
         }
+
+        // Debug: count non-zero bytes in framebuffer
+        var nonzero: usize = 0;
+        for (fb.data) |b| {
+            if (b != 0) nonzero += 1;
+        }
+        log.info("framebuffer: {d}/{d} non-zero bytes", .{ nonzero, fb.data.len });
     }
 
     fn skipColourMapEntries(self: *Client) ClientError!void {

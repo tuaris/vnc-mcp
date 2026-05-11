@@ -11,11 +11,14 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    // stb_image_write needs C compilation
+    // stb_image_write needs C compilation (disable UB sanitizer — stb uses intentional overflow)
     exe_mod.addCSourceFiles(.{
         .files = &.{"src/c/stb_impl.c"},
+        .flags = &.{"-fno-sanitize=undefined"},
     });
     exe_mod.addIncludePath(b.path("src/c"));
+
+    exe_mod.linkSystemLibrary("libcrypto", .{});
 
     const exe = b.addExecutable(.{
         .name = "vnc-mcp-server",
