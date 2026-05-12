@@ -1,0 +1,7 @@
+#ifndef VNC_HELPER_RESOURCE_H
+#define VNC_HELPER_RESOURCE_H
+
+#define IDI_TRAY_NORMAL     101
+#define IDI_TRAY_CONNECTED  102
+
+#endif

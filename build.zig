@@ -38,11 +38,23 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Helper agent (Windows cross-compile)
+    // Step 1: Compile resource file (.rc → .res.o)
     const helper_step = b.step("helper", "Cross-compile vnc-helper.exe for Windows");
+    const compile_rc = b.addSystemCommand(&.{
+        "zig",    "rc",
+        "/i",     "helper/resources",
+        "/fo",    "zig-out/bin/vnc-helper.res.o",
+        "helper/resources/vnc-helper.rc",
+    });
+    compile_rc.step.dependOn(b.getInstallStep());
+
+    // Step 2: Compile and link with resource object
     const build_helper = b.addSystemCommand(&.{
         "zig",       "cc",
         "helper/vnc-helper.c",
+        "zig-out/bin/vnc-helper.res.o",
         "-target",   "x86_64-windows-gnu",
+        "-Ihelper/resources",
         "-O2",
         "-mwindows",
         "-o",        "zig-out/bin/vnc-helper.exe",
@@ -52,7 +64,7 @@ pub fn build(b: *std.Build) void {
         "-lgdi32",
         "-ladvapi32",
     });
-    build_helper.step.dependOn(b.getInstallStep());
+    build_helper.step.dependOn(&compile_rc.step);
     helper_step.dependOn(&build_helper.step);
 
     // Unit tests

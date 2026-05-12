@@ -41,6 +41,8 @@
 #define MAX_RESPONSE       (2 * 1024 * 1024)
 #define MAX_CMD_OUTPUT     (512 * 1024)
 
+#include "resource.h"
+
 #define WM_TRAYICON  (WM_USER + 1)
 #define IDM_EXIT     1001
 #define IDM_ABOUT    1002
@@ -54,6 +56,9 @@ static int  g_console = 0;
 static int  g_running = 1;
 static HWND g_hwnd    = NULL;
 static NOTIFYICONDATAA g_nid;
+static HICON g_icon_normal    = NULL;
+static HICON g_icon_connected = NULL;
+static int   g_client_active  = 0;
 static char g_password[9]       = {0};  /* VNC password (max 8 chars) */
 static int  g_auth_enabled      = 0;
 static const char *g_password_file = NULL;
@@ -1238,9 +1243,28 @@ static DWORD WINAPI server_thread(LPVOID param)
         log_msg("client connected from %s:%d",
                 inet_ntoa(client_addr.sin_addr),
                 ntohs(client_addr.sin_port));
+
+        /* Switch tray icon to connected state */
+        if (g_icon_connected && g_hwnd) {
+            g_client_active = 1;
+            g_nid.hIcon = g_icon_connected;
+            snprintf(g_nid.szTip, sizeof(g_nid.szTip),
+                     "VNC Helper (CONNECTED)");
+            Shell_NotifyIconA(NIM_MODIFY, &g_nid);
+        }
+
         if (auth_client(client_sock))
             handle_client(client_sock);
         closesocket(client_sock);
+
+        /* Restore tray icon to normal state */
+        if (g_icon_normal && g_hwnd) {
+            g_client_active = 0;
+            g_nid.hIcon = g_icon_normal;
+            snprintf(g_nid.szTip, sizeof(g_nid.szTip),
+                     "VNC Helper (port %d)", g_port);
+            Shell_NotifyIconA(NIM_MODIFY, &g_nid);
+        }
     }
 
     closesocket(listen_sock);
@@ -1324,7 +1348,15 @@ static void setup_tray(HINSTANCE hInstance)
     g_nid.uID              = 1;
     g_nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon            = LoadIconA(NULL, IDI_APPLICATION);
+    /* Load custom icons from embedded resources */
+    g_icon_normal = LoadIconA(hInstance, MAKEINTRESOURCEA(IDI_TRAY_NORMAL));
+    g_icon_connected = LoadIconA(hInstance, MAKEINTRESOURCEA(IDI_TRAY_CONNECTED));
+    if (!g_icon_normal)
+        g_icon_normal = LoadIconA(NULL, IDI_APPLICATION);
+    if (!g_icon_connected)
+        g_icon_connected = g_icon_normal;
+
+    g_nid.hIcon            = g_icon_normal;
     snprintf(g_nid.szTip, sizeof(g_nid.szTip),
              "VNC Helper (port %d)", g_port);
 
