@@ -3,6 +3,7 @@ const rfb_client = @import("../rfb/client.zig");
 const keysym = @import("../rfb/keysym.zig");
 const registry_mod = @import("../registry.zig");
 const image = @import("../image.zig");
+const helper = @import("../helper.zig");
 
 const log = std.log.scoped(.tools);
 const JsonValue = std.json.Value;
@@ -169,6 +170,20 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolPasteText(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_list_endpoints")) {
         return toolListEndpoints(allocator);
+    } else if (std.mem.eql(u8, name, "vnc_cursor_position")) {
+        return toolCursorPosition(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_window_list")) {
+        return toolWindowList(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_active_window")) {
+        return toolActiveWindow(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_run_command")) {
+        return toolRunCommand(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_screen_info")) {
+        return toolScreenInfo(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_upload_file")) {
+        return toolUploadFile(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_download_file")) {
+        return toolDownloadFile(allocator, arguments);
     } else {
         return textContent(allocator, "Unknown tool");
     }
@@ -178,12 +193,21 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
     const client = try getClient(arguments);
 
     var quality: u8 = 75;
+    var delay_ms: u64 = 0;
     if (arguments) |args| {
         if (args == .object) {
             if (getInt(args.object, "quality")) |q| {
                 quality = @intCast(std.math.clamp(q, 1, 100));
             }
+            if (getInt(args.object, "delay")) |d| {
+                delay_ms = @intCast(std.math.clamp(d, 0, 10000));
+            }
         }
+    }
+
+    // Wait for screen to settle after prior actions (click, type, paste)
+    if (delay_ms > 0) {
+        std.Thread.sleep(delay_ms * std.time.ns_per_ms);
     }
 
     const fb = try client.screenshot();
@@ -378,17 +402,218 @@ fn toolPasteText(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue
 
     const client = try getClient(arguments);
 
-    // Set clipboard
+    // Set clipboard via ClientCutText — TightVNC sets Windows clipboard
+    // asynchronously through its message loop, needs time to propagate
     try client.sendClipboard(text);
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    std.Thread.sleep(300 * std.time.ns_per_ms);
 
-    // Send Ctrl+V
+    // Send Ctrl+V with inter-key delays for reliability
     try client.sendKeyEvent(0xFFE3, true); // Control_L down
+    std.Thread.sleep(20 * std.time.ns_per_ms);
     try client.sendKeyEvent(0x0076, true); // 'v' down
+    std.Thread.sleep(20 * std.time.ns_per_ms);
     try client.sendKeyEvent(0x0076, false); // 'v' up
+    std.Thread.sleep(20 * std.time.ns_per_ms);
     try client.sendKeyEvent(0xFFE3, false); // Control_L up
+    std.Thread.sleep(50 * std.time.ns_per_ms);
 
     return textContent(allocator, "Text pasted");
+}
+
+/// Helper tool: call the vnc-helper agent on the endpoint
+fn callHelper(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []const u8, extra_params: ?[]const u8) ![]u8 {
+    const ep = try getEndpoint(arguments);
+    if (ep.helper_port == 0) {
+        return error.FramebufferNotReady; // will be caught and shown as error
+    }
+
+    // Read VNC password for helper auth (same password_file as VNC connection)
+    var password: ?[]u8 = null;
+    defer if (password) |pw| allocator.free(pw);
+
+    if (ep.password_file.len > 0) {
+        password = registry_mod.Registry.readPassword(allocator, ep.password_file) catch null;
+    }
+
+    const pw_slice: ?[]const u8 = if (password) |pw| pw else null;
+
+    var request: []u8 = undefined;
+    if (extra_params) |params| {
+        request = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",{s}}}", .{ command, params });
+    } else {
+        request = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\"}}", .{command});
+    }
+    defer allocator.free(request);
+
+    return helper.call(allocator, ep.host, ep.helper_port, pw_slice, request);
+}
+
+fn helperNotConfigured(allocator: std.mem.Allocator) !JsonValue {
+    return textContent(allocator, "Helper agent not configured for this endpoint. Set helper_port in endpoints.json and run vnc-helper.exe on the target machine.");
+}
+
+fn helperNotAvailable(allocator: std.mem.Allocator) !JsonValue {
+    return textContent(allocator, "Helper agent not available. Ensure vnc-helper.exe is running on the target machine.");
+}
+
+fn toolCursorPosition(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const response = callHelper(allocator, arguments, "cursor_position", null) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolWindowList(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const response = callHelper(allocator, arguments, "window_list", null) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolActiveWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const response = callHelper(allocator, arguments, "active_window", null) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolRunCommand(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const cmd_str = getString(args, "cmd") orelse return error.InvalidArgument;
+
+    // JSON-escape the command string
+    const escaped_cmd = try helper.jsonEscape(allocator, cmd_str);
+    defer allocator.free(escaped_cmd);
+
+    // Build extra params
+    var extra: []u8 = undefined;
+    if (getInt(args, "timeout")) |t| {
+        extra = try std.fmt.allocPrint(allocator, "\"cmd\":\"{s}\",\"timeout\":{d}", .{ escaped_cmd, t });
+    } else {
+        extra = try std.fmt.allocPrint(allocator, "\"cmd\":\"{s}\"", .{escaped_cmd});
+    }
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "run_command", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolScreenInfo(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const response = callHelper(allocator, arguments, "screen_info", null) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolUploadFile(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const local_path = getString(args, "local_path") orelse return error.InvalidArgument;
+    const remote_path = getString(args, "remote_path") orelse return error.InvalidArgument;
+
+    // Read local file
+    const file = std.fs.openFileAbsolute(local_path, .{}) catch |err| {
+        const msg = try std.fmt.allocPrint(allocator, "Failed to open local file: {s}: {}", .{ local_path, err });
+        return textContent(allocator, msg);
+    };
+    defer file.close();
+
+    const file_data = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+        const msg = try std.fmt.allocPrint(allocator, "Failed to read local file: {}", .{err});
+        return textContent(allocator, msg);
+    };
+    defer allocator.free(file_data);
+
+    // Base64 encode
+    const b64_encoder = std.base64.standard;
+    const b64_len = b64_encoder.Encoder.calcSize(file_data.len);
+    const b64_data = try allocator.alloc(u8, b64_len);
+    defer allocator.free(b64_data);
+    _ = b64_encoder.Encoder.encode(b64_data, file_data);
+
+    // Escape remote_path for JSON
+    const escaped_path = try helper.jsonEscape(allocator, remote_path);
+    defer allocator.free(escaped_path);
+
+    // Build extra params: "path":"<remote>","content":"<b64>"
+    const extra = try std.fmt.allocPrint(allocator, "\"path\":\"{s}\",\"content\":\"{s}\"", .{ escaped_path, b64_data });
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "file_upload", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolDownloadFile(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const remote_path = getString(args, "remote_path") orelse return error.InvalidArgument;
+    const local_path = getString(args, "local_path") orelse return error.InvalidArgument;
+
+    // Escape remote_path for JSON
+    const escaped_path = try helper.jsonEscape(allocator, remote_path);
+    defer allocator.free(escaped_path);
+
+    const extra = try std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{escaped_path});
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "file_download", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+
+    // Parse response to extract base64 content and save to local file
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{
+        .ignore_unknown_fields = true,
+    }) catch {
+        return textContent(allocator, response);
+    };
+    defer parsed.deinit();
+
+    const root = if (parsed.value == .object) parsed.value.object else return textContent(allocator, response);
+    const status = if (root.get("status")) |s| (if (s == .string) s.string else null) else null;
+    if (status == null or !std.mem.eql(u8, status.?, "ok")) {
+        return textContent(allocator, response);
+    }
+
+    const data = if (root.get("data")) |d| (if (d == .object) d.object else null) else null;
+    if (data == null) return textContent(allocator, response);
+
+    const content_b64 = if (data.?.get("content")) |c| (if (c == .string) c.string else null) else null;
+    if (content_b64 == null) return textContent(allocator, response);
+
+    // Decode base64
+    const b64_decoder = std.base64.standard;
+    const decoded_len = b64_decoder.Decoder.calcSizeUpperBound(content_b64.?.len) catch {
+        return textContent(allocator, "Invalid base64 content from helper");
+    };
+    const decoded_buf = try allocator.alloc(u8, decoded_len);
+    defer allocator.free(decoded_buf);
+
+    b64_decoder.Decoder.decode(decoded_buf, content_b64.?) catch {
+        return textContent(allocator, "Failed to decode base64 content from helper");
+    };
+
+    // Write to local file
+    const out_file = std.fs.createFileAbsolute(local_path, .{}) catch |err| {
+        const msg = try std.fmt.allocPrint(allocator, "Failed to create local file {s}: {}", .{ local_path, err });
+        return textContent(allocator, msg);
+    };
+    defer out_file.close();
+    out_file.writeAll(decoded_buf[0..decoded_len]) catch |err| {
+        const msg = try std.fmt.allocPrint(allocator, "Failed to write local file: {}", .{err});
+        return textContent(allocator, msg);
+    };
+
+    const msg = try std.fmt.allocPrint(allocator, "Downloaded {d} bytes from {s} to {s}", .{ decoded_len, remote_path, local_path });
+    return textContent(allocator, msg);
 }
 
 fn toolListEndpoints(allocator: std.mem.Allocator) !JsonValue {

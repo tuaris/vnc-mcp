@@ -37,6 +37,24 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run vnc-mcp-server");
     run_step.dependOn(&run_cmd.step);
 
+    // Helper agent (Windows cross-compile)
+    const helper_step = b.step("helper", "Cross-compile vnc-helper.exe for Windows");
+    const build_helper = b.addSystemCommand(&.{
+        "zig",       "cc",
+        "helper/vnc-helper.c",
+        "-target",   "x86_64-windows-gnu",
+        "-O2",
+        "-mwindows",
+        "-o",        "zig-out/bin/vnc-helper.exe",
+        "-lws2_32",
+        "-lshell32",
+        "-luser32",
+        "-lgdi32",
+        "-ladvapi32",
+    });
+    build_helper.step.dependOn(b.getInstallStep());
+    helper_step.dependOn(&build_helper.step);
+
     // Unit tests
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),

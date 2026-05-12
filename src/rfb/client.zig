@@ -447,14 +447,20 @@ pub const Client = struct {
 
     /// Capture the current framebuffer as a screenshot
     pub fn screenshot(self: *Client) ClientError!*const Framebuffer {
-        // First request: non-incremental to seed the framebuffer
+        // TightVNC caches the screen and updates it via polling (every ~100ms).
+        // If we request immediately after an action, we get the stale cached frame.
+        // Strategy:
+        //   1. Send a non-incremental request to trigger TightVNC's screen capture
+        //   2. Wait for the polling cycle to complete and fresh frame to arrive
+        //   3. Send another non-incremental request to get the definitive current screen
         try self.requestUpdate(false);
         try self.receiveUpdate();
 
-        // Brief delay for screen capture driver to populate
-        std.Thread.sleep(200 * std.time.ns_per_ms);
+        // Wait long enough for TightVNC's screen polling to detect any recent
+        // changes (action → Windows render → VNC poll → capture)
+        std.Thread.sleep(500 * std.time.ns_per_ms);
 
-        // Second request: get the actual current screen
+        // Second request: guaranteed fresh after the polling delay
         try self.requestUpdate(false);
         try self.receiveUpdate();
 
