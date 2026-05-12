@@ -67,6 +67,9 @@ static CRITICAL_SECTION g_cs;           /* protects g_client_ip/g_connect_time *
 static char g_password[9]       = {0};  /* VNC password (max 8 chars) */
 static int  g_auth_enabled      = 0;
 static const char *g_password_file = NULL;
+static volatile DWORD g_overlay_linger_until = 0; /* GetTickCount deadline for auto-hide */
+
+#define OVERLAY_LINGER_MS 30000  /* keep overlay visible 30s after last disconnect */
 
 /* Forward declarations */
 static void log_msg(const char *fmt, ...);
@@ -1205,8 +1208,9 @@ static DWORD WINAPI client_thread(LPVOID param)
     ClientCtx *ctx = (ClientCtx *)param;
     LONG prev;
 
-    /* Track connection */
+    /* Track connection — cancel any pending linger hide */
     prev = InterlockedIncrement(&g_client_count);
+    g_overlay_linger_until = 0;
     EnterCriticalSection(&g_cs);
     strncpy(g_client_ip, ctx->ip, sizeof(g_client_ip) - 1);
     g_connect_time = GetTickCount();
@@ -1229,16 +1233,12 @@ static DWORD WINAPI client_thread(LPVOID param)
 
     log_msg("client disconnected: %s:%d", ctx->ip, ctx->port);
 
-    /* Decrement and restore icon + hide overlay if no more clients */
+    /* Decrement — start linger countdown if no more clients */
     prev = InterlockedDecrement(&g_client_count);
     if (prev == 0) {
-        if (g_icon_normal && g_hwnd) {
-            g_nid.hIcon = g_icon_normal;
-            snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-                     "VNC Helper (port %d)", g_port);
-            Shell_NotifyIconA(NIM_MODIFY, &g_nid);
-        }
-        overlay_hide();
+        /* Don't hide immediately — set linger deadline.
+         * The overlay timer (1s) will auto-hide after OVERLAY_LINGER_MS. */
+        g_overlay_linger_until = GetTickCount() + OVERLAY_LINGER_MS;
     }
 
     free(ctx);
@@ -1436,7 +1436,7 @@ static void setup_tray(HINSTANCE hInstance)
 #define OVERLAY_MARGIN    8
 #define OVERLAY_ALPHA     210  /* 0-255 translucency */
 
-static HWND g_overlay_hwnd = NULL;
+static HWND  g_overlay_hwnd = NULL;
 
 static void overlay_update_text(HWND hwnd)
 {
@@ -1500,8 +1500,22 @@ static LRESULT CALLBACK overlay_wnd_proc(HWND hwnd, UINT msg,
     }
 
     case WM_TIMER:
-        if (wp == OVERLAY_TIMER_ID)
+        if (wp == OVERLAY_TIMER_ID) {
             overlay_update_text(hwnd);
+            /* Auto-hide after linger period with no active clients */
+            if (g_client_count == 0 && g_overlay_linger_until != 0 &&
+                GetTickCount() >= g_overlay_linger_until) {
+                g_overlay_linger_until = 0;
+                ShowWindow(hwnd, SW_HIDE);
+                /* Restore tray icon to idle */
+                if (g_icon_normal && g_hwnd) {
+                    g_nid.hIcon = g_icon_normal;
+                    snprintf(g_nid.szTip, sizeof(g_nid.szTip),
+                             "VNC Helper (port %d)", g_port);
+                    Shell_NotifyIconA(NIM_MODIFY, &g_nid);
+                }
+            }
+        }
         return 0;
 
     case WM_NCHITTEST:
