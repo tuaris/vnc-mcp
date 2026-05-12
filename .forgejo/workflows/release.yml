@@ -75,8 +75,11 @@ jobs:
           doas cp zig-out/bin/vnc-helper.exe "$JPATH/tmp/build/"
           doas cp installer/vnc-helper.nsi "$JPATH/tmp/build/"
 
+          # VI_VERSION must be numeric X.X.X for VIProductVersion (no pre-release suffix)
+          VI_VERSION=$(echo "$VERSION" | sed 's/-.*//')
+
           doas jexec "$LINUX_JAIL" sh -c \
-            "cd /tmp/build && makensis -DVERSION=${VERSION} -DOUTFILE=vnc-helper-${VERSION}-setup.exe vnc-helper.nsi"
+            "cd /tmp/build && makensis -DVERSION=${VERSION} -DVI_VERSION=${VI_VERSION} -DOUTFILE=vnc-helper-${VERSION}-setup.exe vnc-helper.nsi"
 
           cp "$JPATH/tmp/build/vnc-helper-${VERSION}-setup.exe" .
           file "vnc-helper-${VERSION}-setup.exe"

@@ -13,6 +13,9 @@
 !ifndef OUTFILE
   !define OUTFILE "vnc-helper-setup.exe"
 !endif
+!ifndef VI_VERSION
+  !define VI_VERSION "${VERSION}"
+!endif
 
 ; --- General ---
 Name "VNC Helper Agent"
@@ -23,7 +26,7 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 ; --- Version info embedded in the installer exe ---
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${VI_VERSION}.0"
 VIAddVersionKey "ProductName" "VNC Helper Agent"
 VIAddVersionKey "FileDescription" "VNC Helper Agent Installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
