@@ -10,6 +10,7 @@ const JsonValue = std.json.Value;
 
 /// Connection pool — maps endpoint ID to active RFB client
 var connections: ?*ConnectionPool = null;
+var helper_connections: ?*HelperPool = null;
 var global_registry: ?*registry_mod.Registry = null;
 var global_allocator: std.mem.Allocator = undefined;
 
@@ -65,10 +66,39 @@ pub const ConnectionPool = struct {
     }
 };
 
-pub fn setup(allocator: std.mem.Allocator, reg: *registry_mod.Registry, pool: *ConnectionPool) void {
+pub const HelperPool = struct {
+    entries: std.StringHashMap(helper.HelperConnection),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) HelperPool {
+        return HelperPool{
+            .entries = std.StringHashMap(helper.HelperConnection).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *HelperPool) void {
+        var it = self.entries.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.disconnect();
+        }
+        self.entries.deinit();
+    }
+
+    pub fn getOrCreate(self: *HelperPool, ep: *const registry_mod.Endpoint, password: ?[]const u8) !*helper.HelperConnection {
+        if (self.entries.getPtr(ep.id)) |conn| return conn;
+
+        const conn = helper.HelperConnection.init(self.allocator, ep.host, ep.helper_port, password);
+        try self.entries.put(ep.id, conn);
+        return self.entries.getPtr(ep.id).?;
+    }
+};
+
+pub fn setup(allocator: std.mem.Allocator, reg: *registry_mod.Registry, pool: *ConnectionPool, h_pool: *HelperPool) void {
     global_allocator = allocator;
     global_registry = reg;
     connections = pool;
+    helper_connections = h_pool;
 }
 
 fn getEndpoint(arguments: ?JsonValue) !*const registry_mod.Endpoint {
@@ -420,12 +450,14 @@ fn toolPasteText(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue
     return textContent(allocator, "Text pasted");
 }
 
-/// Helper tool: call the vnc-helper agent on the endpoint
+/// Helper tool: call the vnc-helper agent on the endpoint (persistent connection)
 fn callHelper(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []const u8, extra_params: ?[]const u8) ![]u8 {
     const ep = try getEndpoint(arguments);
     if (ep.helper_port == 0) {
         return error.FramebufferNotReady; // will be caught and shown as error
     }
+
+    const h_pool = helper_connections orelse return error.ConnectionFailed;
 
     // Read VNC password for helper auth (same password_file as VNC connection)
     var password: ?[]u8 = null;
@@ -437,6 +469,8 @@ fn callHelper(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []co
 
     const pw_slice: ?[]const u8 = if (password) |pw| pw else null;
 
+    const conn = try h_pool.getOrCreate(ep, pw_slice);
+
     var request: []u8 = undefined;
     if (extra_params) |params| {
         request = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",{s}}}", .{ command, params });
@@ -445,7 +479,7 @@ fn callHelper(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []co
     }
     defer allocator.free(request);
 
-    return helper.call(allocator, ep.host, ep.helper_port, pw_slice, request);
+    return conn.call(request);
 }
 
 fn helperNotConfigured(allocator: std.mem.Allocator) !JsonValue {

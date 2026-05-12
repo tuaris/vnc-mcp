@@ -1148,48 +1148,62 @@ static void cmd_file_download(SOCKET sock, const char *json)
  * Client Handler
  * ================================================================ */
 
-static void handle_client(SOCKET sock)
+/* Read one newline-delimited request from the socket.
+ * Returns bytes read (>0) on success, 0 on clean disconnect, -1 on error/timeout. */
+static int read_request(SOCKET sock, char *buf, int buf_size)
 {
-    char request[MAX_REQUEST];
-    int  total = 0;
+    int total = 0;
+    memset(buf, 0, buf_size);
 
-    memset(request, 0, sizeof(request));
-
-    while (total < MAX_REQUEST - 1) {
-        int n = recv(sock, request + total, MAX_REQUEST - total - 1, 0);
-        if (n <= 0) return;
+    while (total < buf_size - 1) {
+        int n = recv(sock, buf + total, buf_size - total - 1, 0);
+        if (n <= 0) return (total > 0 && strchr(buf, '\n')) ? total : (n == 0 ? 0 : -1);
         total += n;
-        request[total] = '\0';
-        if (strchr(request, '\n')) break;
+        buf[total] = '\0';
+        if (strchr(buf, '\n')) break;
     }
 
     /* Strip trailing whitespace / newline */
-    while (total > 0 && (request[total - 1] == '\n' ||
-                         request[total - 1] == '\r' ||
-                         request[total - 1] == ' ')) {
-        request[--total] = '\0';
+    while (total > 0 && (buf[total - 1] == '\n' ||
+                         buf[total - 1] == '\r' ||
+                         buf[total - 1] == ' ')) {
+        buf[--total] = '\0';
     }
 
-    if (total == 0) return;
-    log_msg("request: %s", request);
+    return total;
+}
 
-    char command[64] = {0};
-    if (!json_get_string(request, "command", command, sizeof(command))) {
-        send_error(sock, "Missing 'command' field");
-        return;
-    }
+/* Persistent client handler: reads multiple requests per connection.
+ * Each request/response is newline-delimited JSON.
+ * An optional "id" field in the request is echoed in the response. */
+static void handle_client(SOCKET sock)
+{
+    char request[MAX_REQUEST];
 
-    if      (strcmp(command, "cursor_position") == 0) cmd_cursor_position(sock);
-    else if (strcmp(command, "window_list")     == 0) cmd_window_list(sock);
-    else if (strcmp(command, "active_window")   == 0) cmd_active_window(sock);
-    else if (strcmp(command, "run_command")     == 0) cmd_run_command(sock, request);
-    else if (strcmp(command, "screen_info")     == 0) cmd_screen_info(sock);
-    else if (strcmp(command, "file_upload")     == 0) cmd_file_upload(sock, request);
-    else if (strcmp(command, "file_download")   == 0) cmd_file_download(sock, request);
-    else {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Unknown command: %s", command);
-        send_error(sock, msg);
+    while (g_running) {
+        int n = read_request(sock, request, sizeof(request));
+        if (n <= 0) break;  /* disconnect or error */
+
+        log_msg("request: %s", request);
+
+        char command[64] = {0};
+        if (!json_get_string(request, "command", command, sizeof(command))) {
+            send_error(sock, "Missing 'command' field");
+            continue;
+        }
+
+        if      (strcmp(command, "cursor_position") == 0) cmd_cursor_position(sock);
+        else if (strcmp(command, "window_list")     == 0) cmd_window_list(sock);
+        else if (strcmp(command, "active_window")   == 0) cmd_active_window(sock);
+        else if (strcmp(command, "run_command")     == 0) cmd_run_command(sock, request);
+        else if (strcmp(command, "screen_info")     == 0) cmd_screen_info(sock);
+        else if (strcmp(command, "file_upload")     == 0) cmd_file_upload(sock, request);
+        else if (strcmp(command, "file_download")   == 0) cmd_file_download(sock, request);
+        else {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Unknown command: %s", command);
+            send_error(sock, msg);
+        }
     }
 }
 
@@ -1297,10 +1311,10 @@ static DWORD WINAPI server_thread(LPVOID param)
             continue;
         }
 
-        /* Set receive timeout so stale connections don't block forever */
-        DWORD recv_timeout = 10000; /* 10 seconds */
-        setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO,
-                   (const char *)&recv_timeout, sizeof(recv_timeout));
+        /* Enable TCP keepalive to detect dead persistent connections */
+        int keepalive = 1;
+        setsockopt(client_sock, SOL_SOCKET, SO_KEEPALIVE,
+                   (const char *)&keepalive, sizeof(keepalive));
 
         /* Spawn worker thread for this client */
         ClientCtx *ctx = (ClientCtx *)malloc(sizeof(ClientCtx));

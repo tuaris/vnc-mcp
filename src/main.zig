@@ -79,12 +79,15 @@ pub fn main() !void {
     };
     defer reg.deinit();
 
-    // Connection pool
+    // Connection pools
     var pool = tools.ConnectionPool.init(allocator);
     defer pool.deinit();
 
+    var helper_pool = tools.HelperPool.init(allocator);
+    defer helper_pool.deinit();
+
     // Wire up tools
-    tools.setup(allocator, &reg, &pool);
+    tools.setup(allocator, &reg, &pool, &helper_pool);
 
     // MCP server on stdio
     const stdin_file = std.fs.File.stdin();
