@@ -1431,77 +1431,177 @@ static void setup_tray(HINSTANCE hInstance)
 
 #define OVERLAY_WND_CLASS "VncHelperOverlay"
 #define OVERLAY_TIMER_ID  42
-#define OVERLAY_WIDTH     240
-#define OVERLAY_HEIGHT    28
+#define OVERLAY_WIDTH     260
+#define OVERLAY_HEIGHT    30
 #define OVERLAY_MARGIN    8
-#define OVERLAY_ALPHA     210  /* 0-255 translucency */
+#define OVERLAY_BG_ALPHA  210  /* 0-255 background translucency */
+
+/* WDA_EXCLUDEFROMCAPTURE: hide overlay from screen capture (Win10 2004+) */
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
 
 static HWND  g_overlay_hwnd = NULL;
 
-static void overlay_update_text(HWND hwnd)
+/* Paint the overlay into a 32-bit ARGB DIB and call UpdateLayeredWindow.
+ * This gives per-pixel alpha: the background is semi-transparent while
+ * the text is rendered at full opacity — no washed-out appearance. */
+static void overlay_repaint(HWND hwnd)
 {
     if (!hwnd) return;
-    InvalidateRect(hwnd, NULL, TRUE);
+
+    int w = OVERLAY_WIDTH, h = OVERLAY_HEIGHT;
+
+    /* Create 32-bit ARGB DIB section */
+    BITMAPINFO bmi;
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       = w;
+    bmi.bmiHeader.biHeight      = -h;  /* top-down */
+    bmi.bmiHeader.biPlanes      = 1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    BYTE *bits = NULL;
+    HDC screen_dc = GetDC(NULL);
+    HDC mem_dc = CreateCompatibleDC(screen_dc);
+    HBITMAP dib = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS,
+                                   (void **)&bits, NULL, 0);
+    HBITMAP old_bmp = (HBITMAP)SelectObject(mem_dc, dib);
+
+    /* Clear to transparent */
+    memset(bits, 0, (size_t)(w * h * 4));
+
+    /* Fill rounded rect background with per-pixel alpha */
+    {
+        int radius = 10;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                /* Check if pixel is inside the rounded rect */
+                int inside = 1;
+                /* Top-left corner */
+                if (x < radius && y < radius) {
+                    int dx = radius - x - 1, dy = radius - y - 1;
+                    if (dx * dx + dy * dy > radius * radius) inside = 0;
+                }
+                /* Top-right corner */
+                else if (x >= w - radius && y < radius) {
+                    int dx = x - (w - radius), dy = radius - y - 1;
+                    if (dx * dx + dy * dy > radius * radius) inside = 0;
+                }
+                /* Bottom-left corner */
+                else if (x < radius && y >= h - radius) {
+                    int dx = radius - x - 1, dy = y - (h - radius);
+                    if (dx * dx + dy * dy > radius * radius) inside = 0;
+                }
+                /* Bottom-right corner */
+                else if (x >= w - radius && y >= h - radius) {
+                    int dx = x - (w - radius), dy = y - (h - radius);
+                    if (dx * dx + dy * dy > radius * radius) inside = 0;
+                }
+
+                if (inside) {
+                    BYTE *p = bits + (y * w + x) * 4;
+                    /* Pre-multiplied alpha BGRA */
+                    BYTE a = OVERLAY_BG_ALPHA;
+                    p[0] = (BYTE)(30 * a / 255);   /* B */
+                    p[1] = (BYTE)(30 * a / 255);   /* G */
+                    p[2] = (BYTE)(30 * a / 255);   /* R */
+                    p[3] = a;                       /* A */
+                }
+            }
+        }
+    }
+
+    /* Build text: show IP and duration while connected or lingering */
+    char text[128] = {0};
+    EnterCriticalSection(&g_cs);
+    if (g_client_ip[0] && g_connect_time) {
+        DWORD elapsed = (GetTickCount() - g_connect_time) / 1000;
+        int mins = (int)(elapsed / 60);
+        int secs = (int)(elapsed % 60);
+        if (g_client_count > 0) {
+            snprintf(text, sizeof(text), "Connected: %s (%d:%02d)",
+                     g_client_ip, mins, secs);
+        } else {
+            snprintf(text, sizeof(text), "Last: %s (%d:%02d)",
+                     g_client_ip, mins, secs);
+        }
+    }
+    LeaveCriticalSection(&g_cs);
+
+    if (text[0]) {
+        /* Two-pass text rendering: GDI DrawText doesn't write alpha,
+         * so draw text on a separate all-zero surface to isolate text
+         * pixels, then composite onto the main DIB at full opacity. */
+        BYTE *text_bits = NULL;
+        HDC text_dc = CreateCompatibleDC(screen_dc);
+        HBITMAP text_dib = CreateDIBSection(text_dc, &bmi, DIB_RGB_COLORS,
+                                            (void **)&text_bits, NULL, 0);
+        HBITMAP text_old_bmp = (HBITMAP)SelectObject(text_dc, text_dib);
+        memset(text_bits, 0, (size_t)(w * h * 4));
+
+        SetBkMode(text_dc, TRANSPARENT);
+        SetTextColor(text_dc, RGB(180, 255, 180));
+
+        HFONT font = CreateFontA(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                 CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                 DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+        HFONT old_font = (HFONT)SelectObject(text_dc, font);
+
+        RECT text_rc = {12, 0, w - 8, h};
+        DrawTextA(text_dc, text, -1, &text_rc,
+                  DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+
+        SelectObject(text_dc, old_font);
+        DeleteObject(font);
+
+        /* Composite: any text_bits pixel with non-zero RGB is text.
+         * Write it into the main DIB as fully opaque. */
+        for (int i = 0; i < w * h; i++) {
+            BYTE *tp = text_bits + i * 4;
+            if (tp[0] | tp[1] | tp[2]) {
+                BYTE *dp = bits + i * 4;
+                dp[0] = tp[0];  /* B */
+                dp[1] = tp[1];  /* G */
+                dp[2] = tp[2];  /* R */
+                dp[3] = 255;    /* fully opaque */
+            }
+        }
+
+        SelectObject(text_dc, text_old_bmp);
+        DeleteObject(text_dib);
+        DeleteDC(text_dc);
+    }
+
+    /* UpdateLayeredWindow with per-pixel alpha */
+    POINT pt_src = {0, 0};
+    SIZE sz = {w, h};
+    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+
+    POINT pt_pos;
+    RECT win_rc;
+    GetWindowRect(hwnd, &win_rc);
+    pt_pos.x = win_rc.left;
+    pt_pos.y = win_rc.top;
+
+    UpdateLayeredWindow(hwnd, screen_dc, &pt_pos, &sz,
+                        mem_dc, &pt_src, 0, &blend, ULW_ALPHA);
+
+    SelectObject(mem_dc, old_bmp);
+    DeleteObject(dib);
+    DeleteDC(mem_dc);
+    ReleaseDC(NULL, screen_dc);
 }
 
 static LRESULT CALLBACK overlay_wnd_proc(HWND hwnd, UINT msg,
                                           WPARAM wp, LPARAM lp)
 {
     switch (msg) {
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-
-        /* Dark background with rounded corners */
-        HBRUSH bg = CreateSolidBrush(RGB(30, 30, 30));
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(80, 200, 80));
-        SelectObject(hdc, bg);
-        SelectObject(hdc, pen);
-        RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 14, 14);
-        DeleteObject(bg);
-        DeleteObject(pen);
-
-        /* Build text: "● IP (M:SS)" */
-        char text[128] = {0};
-        EnterCriticalSection(&g_cs);
-        if (g_client_count > 0 && g_client_ip[0]) {
-            DWORD elapsed = (GetTickCount() - g_connect_time) / 1000;
-            int mins = (int)(elapsed / 60);
-            int secs = (int)(elapsed % 60);
-            snprintf(text, sizeof(text), "\xE2\x97\x8F %s (%d:%02d)",
-                     g_client_ip, mins, secs);
-        }
-        LeaveCriticalSection(&g_cs);
-
-        if (text[0]) {
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(200, 255, 200));
-
-            HFONT font = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                                     CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                     DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-            HFONT old_font = (HFONT)SelectObject(hdc, font);
-
-            RECT text_rc = rc;
-            text_rc.left += 10;
-            text_rc.right -= 6;
-            DrawTextA(hdc, text, -1, &text_rc,
-                      DT_SINGLELINE | DT_VCENTER | DT_LEFT);
-
-            SelectObject(hdc, old_font);
-            DeleteObject(font);
-        }
-
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-
     case WM_TIMER:
         if (wp == OVERLAY_TIMER_ID) {
-            overlay_update_text(hwnd);
+            overlay_repaint(hwnd);
             /* Auto-hide after linger period with no active clients */
             if (g_client_count == 0 && g_overlay_linger_until != 0 &&
                 GetTickCount() >= g_overlay_linger_until) {
@@ -1547,16 +1647,19 @@ static void overlay_create(HINSTANCE hInstance)
         x, y, OVERLAY_WIDTH, OVERLAY_HEIGHT,
         NULL, NULL, hInstance, NULL);
 
-    SetLayeredWindowAttributes(g_overlay_hwnd, 0, OVERLAY_ALPHA, LWA_ALPHA);
+    /* Hide overlay from screen capture / VNC (Win10 2004+) */
+    SetWindowDisplayAffinity(g_overlay_hwnd, WDA_EXCLUDEFROMCAPTURE);
 
-    /* 1-second timer for duration updates */
+    /* 1-second timer for duration updates + per-pixel alpha repaint */
     SetTimer(g_overlay_hwnd, OVERLAY_TIMER_ID, 1000, NULL);
 }
 
 static void overlay_show(void)
 {
-    if (g_overlay_hwnd)
+    if (g_overlay_hwnd) {
         ShowWindow(g_overlay_hwnd, SW_SHOWNOACTIVATE);
+        overlay_repaint(g_overlay_hwnd);  /* immediate content */
+    }
 }
 
 static void overlay_hide(void)
