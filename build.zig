@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addIncludePath(b.path("src/c"));
 
-    exe_mod.linkSystemLibrary("libcrypto", .{});
+    exe_mod.linkSystemLibrary("crypto", .{});
 
     const exe = b.addExecutable(.{
         .name = "vnc-mcp-server",
