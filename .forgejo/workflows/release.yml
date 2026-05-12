@@ -2,6 +2,11 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+
+env:
+  LINUX_JAIL: linux-build-${{ github.run_id }}
+  JAIL_ROOT: /usr/local/jails
 
 jobs:
   release:
@@ -9,7 +14,11 @@ jobs:
     steps:
       - name: Checkout
         run: |
-          git clone --depth=1 --branch ${{ github.ref_name }} ${{ github.server_url }}/${{ github.repository }}.git .
+          cd "$GITHUB_WORKSPACE"
+          rm -rf ./* ./.??*
+          curl -sLo repo.tar.gz "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/archive/$GITHUB_REF_NAME.tar.gz"
+          tar xf repo.tar.gz --strip-components=1
+          rm repo.tar.gz
 
       - name: Build MCP server (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe
@@ -22,26 +31,121 @@ jobs:
           file zig-out/bin/vnc-mcp-server
           file zig-out/bin/vnc-helper.exe
 
-      - name: Create release
+      # --- Linux jail: build NSIS installer ---
+      - name: Provision Linux jail
         run: |
-          VERSION="${{ github.ref_name }}"
-          # Create Forgejo release and attach binaries
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.FORGE_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"${VERSION}\",\"name\":\"${VERSION}\",\"body\":\"VNC MCP Server ${VERSION}\"}" \
-            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" > release.json
+          JAIL="$LINUX_JAIL"
+          JPATH="$JAIL_ROOT/$JAIL"
+          TMPBASE="/tmp/linux-rootfs-ubuntu-24.04.4.tar.gz"
 
-          RELEASE_ID=$(cat release.json | jq -r '.id')
+          doas kldload linux64 2>/dev/null || true
+          doas kldload linux_common 2>/dev/null || true
+
+          if [ ! -f "$TMPBASE" ]; then
+            echo "==> Fetching Ubuntu 24.04 rootfs..."
+            curl -fSL -o "$TMPBASE" "https://cdimage.ubuntu.com/ubuntu-base/releases/noble/release/ubuntu-base-24.04.4-base-amd64.tar.gz"
+          fi
+
+          doas mkdir -p "$JPATH"
+          doas tar -xf "$TMPBASE" -C "$JPATH"
+          doas cp /etc/resolv.conf "$JPATH/etc/resolv.conf"
+
+          doas mkdir -p "$JPATH/proc" "$JPATH/sys" "$JPATH/dev/shm"
+          doas mount -t linprocfs linprocfs "$JPATH/proc"
+          doas mount -t linsysfs linsysfs "$JPATH/sys"
+          doas mount -t devfs devfs "$JPATH/dev"
+          doas mount -t tmpfs tmpfs "$JPATH/dev/shm"
+
+          doas jail -c name="$JAIL" path="$JPATH" ip4=inherit ip6=inherit \
+            host.hostname="$JAIL" allow.raw_sockets=1 linux=new persist
+
+          doas jexec "$JAIL" sh -c 'echo "APT::Cache-Start \"100000000\";" > /etc/apt/apt.conf.d/99cache'
+          doas jexec "$JAIL" apt-get update -qq
+          doas jexec "$JAIL" apt-get install -y -qq nsis
+
+      - name: Build NSIS installer
+        run: |
+          JPATH="$JAIL_ROOT/$LINUX_JAIL"
+          TAG="${GITHUB_REF_NAME:-dev}"
+          # Strip v prefix for version; if not a tag, use 0.0.0
+          VERSION="${TAG#v}"
+          case "$VERSION" in [0-9]*) ;; *) VERSION="0.0.0" ;; esac
+
+          doas mkdir -p "$JPATH/tmp/build"
+          doas cp zig-out/bin/vnc-helper.exe "$JPATH/tmp/build/"
+          doas cp installer/vnc-helper.nsi "$JPATH/tmp/build/"
+
+          doas jexec "$LINUX_JAIL" sh -c \
+            "cd /tmp/build && makensis -DVERSION=${VERSION} -DOUTFILE=vnc-helper-${VERSION}-setup.exe vnc-helper.nsi"
+
+          cp "$JPATH/tmp/build/vnc-helper-${VERSION}-setup.exe" .
+          file "vnc-helper-${VERSION}-setup.exe"
+          ls -l "vnc-helper-${VERSION}-setup.exe"
+
+      - name: Tear down Linux jail
+        if: always()
+        run: |
+          JPATH="$JAIL_ROOT/$LINUX_JAIL"
+          doas jail -r "$LINUX_JAIL" 2>/dev/null || true
+          doas umount "$JPATH/dev/shm" 2>/dev/null || true
+          doas umount "$JPATH/dev" 2>/dev/null || true
+          doas umount "$JPATH/sys" 2>/dev/null || true
+          doas umount "$JPATH/proc" 2>/dev/null || true
+          if [ -d "$JPATH" ]; then
+            doas chflags -R noschg "$JPATH" 2>/dev/null || true
+            doas rm -rf "$JPATH"
+          fi
+
+      # --- Publish release (only on tag push, not manual dispatch) ---
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          set +e
+          REPO="$GITHUB_REPOSITORY"
+          BASE_URL="$GITHUB_SERVER_URL/api/v1/repos/$REPO"
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          AUTH="Authorization: token $FORGEJO_TOKEN"
+
+          # Delete existing release for this tag if present
+          RESP=$(curl -s -H "$AUTH" "$BASE_URL/releases/tags/$TAG")
+          EXISTING_ID=$(echo "$RESP" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+          if [ -n "$EXISTING_ID" ]; then
+            curl -s -X DELETE -H "$AUTH" "$BASE_URL/releases/$EXISTING_ID"
+            echo "Deleted existing release $EXISTING_ID"
+          fi
+
+          # Create release
+          RESP=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## VNC MCP Server $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **vnc-helper-${VERSION}-setup.exe** — Windows installer (tray app + firewall rule + startup)\\n- **vnc-helper-windows-amd64.exe** — Standalone Windows helper binary\\n- **vnc-mcp-server-freebsd-amd64** — MCP server for FreeBSD\",\"draft\":false,\"prerelease\":false}" \
+            "$BASE_URL/releases")
+          echo "Create release response: $RESP"
+          RELEASE_ID=$(echo "$RESP" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+          if [ -z "$RELEASE_ID" ]; then
+            echo "ERROR: Failed to create release"
+            exit 1
+          fi
+          echo "Created release $RELEASE_ID"
+
+          # Upload installer
+          curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@vnc-helper-${VERSION}-setup.exe" \
+            "$BASE_URL/releases/$RELEASE_ID/assets?name=vnc-helper-${VERSION}-setup.exe"
+          echo "Uploaded installer"
+
+          # Upload standalone helper binary
+          curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @zig-out/bin/vnc-helper.exe \
+            "$BASE_URL/releases/$RELEASE_ID/assets?name=vnc-helper-windows-amd64.exe"
+          echo "Uploaded standalone helper"
 
           # Upload MCP server binary
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.FORGE_TOKEN }}" \
-            -F "attachment=@zig-out/bin/vnc-mcp-server;filename=vnc-mcp-server-freebsd-amd64" \
-            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets"
-
-          # Upload Windows helper
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.FORGE_TOKEN }}" \
-            -F "attachment=@zig-out/bin/vnc-helper.exe;filename=vnc-helper-windows-amd64.exe" \
-            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets"
+          curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @zig-out/bin/vnc-mcp-server \
+            "$BASE_URL/releases/$RELEASE_ID/assets?name=vnc-mcp-server-freebsd-amd64"
+          echo "Uploaded MCP server"
