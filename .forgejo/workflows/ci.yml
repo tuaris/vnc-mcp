@@ -1,0 +1,27 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: FreeBSD
+    steps:
+      - name: Checkout
+        run: |
+          git clone --depth=1 ${{ github.server_url }}/${{ github.repository }}.git .
+          git checkout ${{ github.sha }}
+
+      - name: Build MCP server
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Build Windows helper
+        run: zig build helper
+
+      - name: Verify binaries
+        run: |
+          file zig-out/bin/vnc-mcp-server
+          file zig-out/bin/vnc-helper.exe
+          ls -la zig-out/bin/vnc-mcp-server zig-out/bin/vnc-helper.exe

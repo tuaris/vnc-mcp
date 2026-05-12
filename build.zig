@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) void {
         "-target",   "x86_64-windows-gnu",
         "-Ihelper/resources",
         "-O2",
-        "-mwindows",
+        "-Wl,--subsystem,windows",
         "-o",        "zig-out/bin/vnc-helper.exe",
         "-lws2_32",
         "-lshell32",

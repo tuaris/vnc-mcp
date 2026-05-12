@@ -25,7 +25,9 @@
  * BSD 2-Clause License
  */
 
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
+#endif
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -58,13 +60,18 @@ static HWND g_hwnd    = NULL;
 static NOTIFYICONDATAA g_nid;
 static HICON g_icon_normal    = NULL;
 static HICON g_icon_connected = NULL;
-static int   g_client_active  = 0;
+static volatile LONG g_client_count = 0;  /* active client connections */
+static char g_client_ip[64]     = {0};  /* last connected client IP */
+static DWORD g_connect_time     = 0;    /* GetTickCount at connect */
+static CRITICAL_SECTION g_cs;           /* protects g_client_ip/g_connect_time */
 static char g_password[9]       = {0};  /* VNC password (max 8 chars) */
 static int  g_auth_enabled      = 0;
 static const char *g_password_file = NULL;
 
 /* Forward declarations */
 static void log_msg(const char *fmt, ...);
+static void overlay_show(void);
+static void overlay_hide(void);
 
 /* ================================================================
  * VNC DES Authentication (RFC 6143 Section 7.2.2)
@@ -1184,7 +1191,62 @@ static void handle_client(SOCKET sock)
 }
 
 /* ================================================================
- * TCP Server Thread
+ * Client Worker Thread (one per connection)
+ * ================================================================ */
+
+typedef struct {
+    SOCKET sock;
+    char   ip[64];
+    int    port;
+} ClientCtx;
+
+static DWORD WINAPI client_thread(LPVOID param)
+{
+    ClientCtx *ctx = (ClientCtx *)param;
+    LONG prev;
+
+    /* Track connection */
+    prev = InterlockedIncrement(&g_client_count);
+    EnterCriticalSection(&g_cs);
+    strncpy(g_client_ip, ctx->ip, sizeof(g_client_ip) - 1);
+    g_connect_time = GetTickCount();
+    LeaveCriticalSection(&g_cs);
+
+    /* Switch tray icon to connected state + show overlay */
+    if (g_icon_connected && g_hwnd) {
+        g_nid.hIcon = g_icon_connected;
+        snprintf(g_nid.szTip, sizeof(g_nid.szTip),
+                 "VNC Helper (CONNECTED: %s)", ctx->ip);
+        Shell_NotifyIconA(NIM_MODIFY, &g_nid);
+    }
+    overlay_show();
+
+    log_msg("client connected from %s:%d", ctx->ip, ctx->port);
+
+    if (auth_client(ctx->sock))
+        handle_client(ctx->sock);
+    closesocket(ctx->sock);
+
+    log_msg("client disconnected: %s:%d", ctx->ip, ctx->port);
+
+    /* Decrement and restore icon + hide overlay if no more clients */
+    prev = InterlockedDecrement(&g_client_count);
+    if (prev == 0) {
+        if (g_icon_normal && g_hwnd) {
+            g_nid.hIcon = g_icon_normal;
+            snprintf(g_nid.szTip, sizeof(g_nid.szTip),
+                     "VNC Helper (port %d)", g_port);
+            Shell_NotifyIconA(NIM_MODIFY, &g_nid);
+        }
+        overlay_hide();
+    }
+
+    free(ctx);
+    return 0;
+}
+
+/* ================================================================
+ * TCP Server Thread (accept loop)
  * ================================================================ */
 
 static DWORD WINAPI server_thread(LPVOID param)
@@ -1240,30 +1302,25 @@ static DWORD WINAPI server_thread(LPVOID param)
         setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO,
                    (const char *)&recv_timeout, sizeof(recv_timeout));
 
-        log_msg("client connected from %s:%d",
-                inet_ntoa(client_addr.sin_addr),
-                ntohs(client_addr.sin_port));
-
-        /* Switch tray icon to connected state */
-        if (g_icon_connected && g_hwnd) {
-            g_client_active = 1;
-            g_nid.hIcon = g_icon_connected;
-            snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-                     "VNC Helper (CONNECTED)");
-            Shell_NotifyIconA(NIM_MODIFY, &g_nid);
+        /* Spawn worker thread for this client */
+        ClientCtx *ctx = (ClientCtx *)malloc(sizeof(ClientCtx));
+        if (!ctx) {
+            log_msg("malloc failed for client context");
+            closesocket(client_sock);
+            continue;
         }
+        ctx->sock = client_sock;
+        strncpy(ctx->ip, inet_ntoa(client_addr.sin_addr), sizeof(ctx->ip) - 1);
+        ctx->ip[sizeof(ctx->ip) - 1] = '\0';
+        ctx->port = ntohs(client_addr.sin_port);
 
-        if (auth_client(client_sock))
-            handle_client(client_sock);
-        closesocket(client_sock);
-
-        /* Restore tray icon to normal state */
-        if (g_icon_normal && g_hwnd) {
-            g_client_active = 0;
-            g_nid.hIcon = g_icon_normal;
-            snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-                     "VNC Helper (port %d)", g_port);
-            Shell_NotifyIconA(NIM_MODIFY, &g_nid);
+        HANDLE ht = CreateThread(NULL, 0, client_thread, ctx, 0, NULL);
+        if (ht) {
+            CloseHandle(ht);  /* detach — thread runs independently */
+        } else {
+            log_msg("CreateThread failed: %lu", (unsigned long)GetLastError());
+            closesocket(client_sock);
+            free(ctx);
         }
     }
 
@@ -1364,6 +1421,137 @@ static void setup_tray(HINSTANCE hInstance)
 }
 
 /* ================================================================
+ * On-Screen Connection Indicator Overlay
+ *
+ * A small translucent pill at top-right of screen showing:
+ *   "● 192.168.1.233 (0:05)"
+ * Appears when a client connects, hides when all disconnect.
+ * WS_EX_TOPMOST + WS_EX_TOOLWINDOW + WS_EX_LAYERED (click-through)
+ * ================================================================ */
+
+#define OVERLAY_WND_CLASS "VncHelperOverlay"
+#define OVERLAY_TIMER_ID  42
+#define OVERLAY_WIDTH     240
+#define OVERLAY_HEIGHT    28
+#define OVERLAY_MARGIN    8
+#define OVERLAY_ALPHA     210  /* 0-255 translucency */
+
+static HWND g_overlay_hwnd = NULL;
+
+static void overlay_update_text(HWND hwnd)
+{
+    if (!hwnd) return;
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
+static LRESULT CALLBACK overlay_wnd_proc(HWND hwnd, UINT msg,
+                                          WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+
+        /* Dark background with rounded corners */
+        HBRUSH bg = CreateSolidBrush(RGB(30, 30, 30));
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(80, 200, 80));
+        SelectObject(hdc, bg);
+        SelectObject(hdc, pen);
+        RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 14, 14);
+        DeleteObject(bg);
+        DeleteObject(pen);
+
+        /* Build text: "● IP (M:SS)" */
+        char text[128] = {0};
+        EnterCriticalSection(&g_cs);
+        if (g_client_count > 0 && g_client_ip[0]) {
+            DWORD elapsed = (GetTickCount() - g_connect_time) / 1000;
+            int mins = (int)(elapsed / 60);
+            int secs = (int)(elapsed % 60);
+            snprintf(text, sizeof(text), "\xE2\x97\x8F %s (%d:%02d)",
+                     g_client_ip, mins, secs);
+        }
+        LeaveCriticalSection(&g_cs);
+
+        if (text[0]) {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(200, 255, 200));
+
+            HFONT font = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                     CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                     DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+            HFONT old_font = (HFONT)SelectObject(hdc, font);
+
+            RECT text_rc = rc;
+            text_rc.left += 10;
+            text_rc.right -= 6;
+            DrawTextA(hdc, text, -1, &text_rc,
+                      DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+
+            SelectObject(hdc, old_font);
+            DeleteObject(font);
+        }
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_TIMER:
+        if (wp == OVERLAY_TIMER_ID)
+            overlay_update_text(hwnd);
+        return 0;
+
+    case WM_NCHITTEST:
+        /* Allow dragging the overlay by its client area */
+        return HTCAPTION;
+    }
+    return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+static void overlay_create(HINSTANCE hInstance)
+{
+    WNDCLASSA wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.lpfnWndProc   = overlay_wnd_proc;
+    wc.hInstance      = hInstance;
+    wc.lpszClassName  = OVERLAY_WND_CLASS;
+    wc.hbrBackground  = (HBRUSH)GetStockObject(NULL_BRUSH);
+    RegisterClassA(&wc);
+
+    /* Position at top-right of primary monitor */
+    int screen_w = GetSystemMetrics(SM_CXSCREEN);
+    int x = screen_w - OVERLAY_WIDTH - OVERLAY_MARGIN;
+    int y = OVERLAY_MARGIN;
+
+    g_overlay_hwnd = CreateWindowExA(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+        OVERLAY_WND_CLASS, "VNC Connection",
+        WS_POPUP,
+        x, y, OVERLAY_WIDTH, OVERLAY_HEIGHT,
+        NULL, NULL, hInstance, NULL);
+
+    SetLayeredWindowAttributes(g_overlay_hwnd, 0, OVERLAY_ALPHA, LWA_ALPHA);
+
+    /* 1-second timer for duration updates */
+    SetTimer(g_overlay_hwnd, OVERLAY_TIMER_ID, 1000, NULL);
+}
+
+static void overlay_show(void)
+{
+    if (g_overlay_hwnd)
+        ShowWindow(g_overlay_hwnd, SW_SHOWNOACTIVATE);
+}
+
+static void overlay_hide(void)
+{
+    if (g_overlay_hwnd)
+        ShowWindow(g_overlay_hwnd, SW_HIDE);
+}
+
+/* ================================================================
  * Registry Install / Uninstall
  * ================================================================ */
 
@@ -1404,29 +1592,47 @@ static void do_uninstall(void)
 }
 
 /* ================================================================
- * Entry Point
+ * Entry Point — WinMain (GUI subsystem, no console by default)
  * ================================================================ */
 
-int main(int argc, char *argv[])
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
+                   LPSTR lpCmdLine, int nCmdShow)
 {
-    HINSTANCE hInstance = GetModuleHandle(NULL);
+    (void)hPrevInstance;
+    (void)lpCmdLine;
+    (void)nCmdShow;
 
-    /* Parse command line */
+    /* Parse command line using Win32 API */
+    int argc = 0;
+    LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-console") == 0) {
+        if (wcscmp(wargv[i], L"-console") == 0) {
             g_console = 1;
-        } else if (strcmp(argv[i], "-port") == 0 && i + 1 < argc) {
-            g_port = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "-password-file") == 0 && i + 1 < argc) {
-            g_password_file = argv[++i];
-        } else if (strcmp(argv[i], "install") == 0) {
+        } else if (wcscmp(wargv[i], L"-port") == 0 && i + 1 < argc) {
+            g_port = _wtoi(wargv[++i]);
+        } else if (wcscmp(wargv[i], L"-password-file") == 0 && i + 1 < argc) {
+            /* Convert wide string to narrow for password file path */
+            static char pw_path[MAX_PATH];
+            WideCharToMultiByte(CP_UTF8, 0, wargv[++i], -1,
+                                pw_path, sizeof(pw_path), NULL, NULL);
+            g_password_file = pw_path;
+        } else if (wcscmp(wargv[i], L"install") == 0) {
+            AllocConsole();
+            freopen("CONOUT$", "w", stdout);
             do_install();
+            LocalFree(wargv);
             return 0;
-        } else if (strcmp(argv[i], "uninstall") == 0) {
+        } else if (wcscmp(wargv[i], L"uninstall") == 0) {
+            AllocConsole();
+            freopen("CONOUT$", "w", stdout);
             do_uninstall();
+            LocalFree(wargv);
             return 0;
-        } else if (strcmp(argv[i], "-h") == 0 ||
-                   strcmp(argv[i], "--help") == 0) {
+        } else if (wcscmp(wargv[i], L"-h") == 0 ||
+                   wcscmp(wargv[i], L"--help") == 0) {
+            AllocConsole();
+            freopen("CONOUT$", "w", stdout);
             printf("VNC Helper Agent v" VNC_HELPER_VERSION "\n\n"
                    "Usage: vnc-helper.exe [options]\n"
                    "  -console              Show console output\n"
@@ -1438,28 +1644,26 @@ int main(int argc, char *argv[])
                    "registry (TightVNC, RealVNC, TigerVNC, UltraVNC) or\n"
                    "from -password-file. Uses VNC DES challenge-response.\n",
                    DEFAULT_PORT);
+            LocalFree(wargv);
             return 0;
         }
     }
+    LocalFree(wargv);
 
-    /* Console / tray mode setup */
+    /* Console mode: allocate a console for debugging output */
     if (g_console) {
-        /* Ensure we have a visible console (needed if built with -mwindows) */
-        if (!GetConsoleWindow()) {
-            AllocConsole();
-        }
+        AllocConsole();
         freopen("CONOUT$", "w", stdout);
         freopen("CONOUT$", "w", stderr);
-    } else {
-        /* Hide console window in tray mode */
-        HWND con = GetConsoleWindow();
-        if (con) ShowWindow(con, SW_HIDE);
     }
+
+    /* Initialize critical section for client tracking */
+    InitializeCriticalSection(&g_cs);
 
     /* Initialize Winsock */
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        fprintf(stderr, "WSAStartup failed\n");
+        if (g_console) fprintf(stderr, "WSAStartup failed\n");
         return 1;
     }
 
@@ -1471,8 +1675,9 @@ int main(int argc, char *argv[])
     /* Start TCP server in background thread */
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
 
-    /* Setup system tray icon and run message loop */
+    /* Setup system tray icon and connection overlay */
     setup_tray(hInstance);
+    overlay_create(hInstance);
 
     MSG msg;
     while (GetMessageA(&msg, NULL, 0, 0)) {
@@ -1480,6 +1685,7 @@ int main(int argc, char *argv[])
         DispatchMessageA(&msg);
     }
 
+    DeleteCriticalSection(&g_cs);
     WSACleanup();
     return 0;
 }

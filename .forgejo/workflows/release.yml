@@ -1,0 +1,47 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: FreeBSD
+    steps:
+      - name: Checkout
+        run: |
+          git clone --depth=1 --branch ${{ github.ref_name }} ${{ github.server_url }}/${{ github.repository }}.git .
+
+      - name: Build MCP server (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Build Windows helper
+        run: zig build helper
+
+      - name: Verify binaries
+        run: |
+          file zig-out/bin/vnc-mcp-server
+          file zig-out/bin/vnc-helper.exe
+
+      - name: Create release
+        run: |
+          VERSION="${{ github.ref_name }}"
+          # Create Forgejo release and attach binaries
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.FORGE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"${VERSION}\",\"name\":\"${VERSION}\",\"body\":\"VNC MCP Server ${VERSION}\"}" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" > release.json
+
+          RELEASE_ID=$(cat release.json | jq -r '.id')
+
+          # Upload MCP server binary
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.FORGE_TOKEN }}" \
+            -F "attachment=@zig-out/bin/vnc-mcp-server;filename=vnc-mcp-server-freebsd-amd64" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets"
+
+          # Upload Windows helper
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.FORGE_TOKEN }}" \
+            -F "attachment=@zig-out/bin/vnc-helper.exe;filename=vnc-helper-windows-amd64.exe" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets"
