@@ -205,7 +205,10 @@ pub const McpServer = struct {
             "6. For window switching, use Alt+Tab or verify the target window is foreground via vnc_active_window — do NOT click taskbar buttons by guessing coordinates.\n" ++
             "7. The helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region) provide real-time authoritative state — prefer them over visual guessing.";
 
-        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.1.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, instructions });
+        const escaped_instructions = try jsonEscape(self.allocator, instructions);
+        defer self.allocator.free(escaped_instructions);
+
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.1.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
