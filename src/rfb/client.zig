@@ -133,6 +133,7 @@ pub const Client = struct {
     height: u16 = 0,
     allocator: std.mem.Allocator,
     connected: bool = false,
+    last_clipboard: ?[]u8 = null,
 
     pub fn connect(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8) ClientError!Client {
         const stream = std.net.tcpConnectToHost(allocator, host, port) catch return error.ConnectionFailed;
@@ -152,6 +153,10 @@ pub const Client = struct {
         if (self.framebuffer) |*fb| {
             fb.deinit();
             self.framebuffer = null;
+        }
+        if (self.last_clipboard) |cb| {
+            self.allocator.free(cb);
+            self.last_clipboard = null;
         }
         self.stream.close();
         self.connected = false;
@@ -385,7 +390,7 @@ pub const Client = struct {
                     // No data to read
                 },
                 .server_cut_text => {
-                    try self.skipServerCutText();
+                    try self.storeServerCutText();
                 },
                 else => {
                     log.warn("unknown server message type: {d}", .{msg_type_buf[0]});
@@ -428,11 +433,26 @@ pub const Client = struct {
         try self.skipBytes(skip_bytes);
     }
 
-    fn skipServerCutText(self: *Client) ClientError!void {
+    fn storeServerCutText(self: *Client) ClientError!void {
         var header: [7]u8 = undefined;
         try self.readExact(&header);
         const length = std.mem.readInt(u32, header[3..7], .big);
-        try self.skipBytes(length);
+        if (length > 0 and length <= 4 * 1024 * 1024) {
+            // Free previous clipboard text
+            if (self.last_clipboard) |old| self.allocator.free(old);
+            const buf = self.allocator.alloc(u8, length) catch {
+                try self.skipBytes(length);
+                return;
+            };
+            self.readExact(buf) catch |err| {
+                self.allocator.free(buf);
+                return err;
+            };
+            self.last_clipboard = buf;
+            log.info("clipboard received: {d} bytes", .{length});
+        } else {
+            try self.skipBytes(length);
+        }
     }
 
     fn skipBytes(self: *Client, count: anytype) ClientError!void {
@@ -486,6 +506,11 @@ pub const Client = struct {
         std.mem.writeInt(u16, msg[2..4], x, .big);
         std.mem.writeInt(u16, msg[4..6], y, .big);
         try self.writeAll(&msg);
+    }
+
+    /// Get the last clipboard text received from the server (ServerCutText)
+    pub fn getClipboard(self: *Client) ?[]const u8 {
+        return self.last_clipboard;
     }
 
     /// Send clipboard text to remote (ClientCutText)

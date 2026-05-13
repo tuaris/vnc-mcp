@@ -193,7 +193,19 @@ pub const McpServer = struct {
         const id_str = try self.formatId(id);
         defer self.allocator.free(id_str);
 
-        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.1.0\"}},\"instructions\":\"VNC remote desktop control server. Use vnc_list_endpoints to see available machines. Use vnc_screenshot to capture the screen. All tools accept an optional 'endpoint' parameter to target a specific machine.\"}}}}", .{id_str});
+        const instructions =
+            "VNC remote desktop control server. Use vnc_list_endpoints to see available machines. " ++
+            "All tools accept an optional 'endpoint' parameter to target a specific machine.\n\n" ++
+            "IMPORTANT — Interaction Strategy:\n" ++
+            "1. Screenshots may be STALE (up to 500ms behind reality). Never trust a screenshot as the sole basis for click coordinates.\n" ++
+            "2. Before clicking, call vnc_active_window or vnc_window_list to get authoritative window positions and verify which window has focus.\n" ++
+            "3. Prefer keyboard navigation (Alt+Tab, Win+R, Tab, Enter, F6, Escape) over clicks when possible — keys are always reliable.\n" ++
+            "4. Use vnc_ocr_region to verify text content at specific coordinates before acting on assumptions from screenshots.\n" ++
+            "5. vnc_clipboard_get reads the remote clipboard (updated whenever text is copied on the remote machine).\n" ++
+            "6. For window switching, use Alt+Tab or verify the target window is foreground via vnc_active_window — do NOT click taskbar buttons by guessing coordinates.\n" ++
+            "7. The helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region) provide real-time authoritative state — prefer them over visual guessing.";
+
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.1.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, instructions });
         defer self.allocator.free(response);
 
         try self.writeLine(response);

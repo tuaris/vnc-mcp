@@ -214,6 +214,16 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolUploadFile(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_download_file")) {
         return toolDownloadFile(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_ocr_region")) {
+        return toolOcrRegion(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_clipboard_get")) {
+        return toolClipboardGet(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_ui_tree")) {
+        return toolUiTree(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_ui_element_text")) {
+        return toolUiElementText(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_ui_click_element")) {
+        return toolUiClickElement(allocator, arguments);
     } else {
         return textContent(allocator, "Unknown tool");
     }
@@ -678,4 +688,169 @@ fn toolListEndpoints(allocator: std.mem.Allocator) !JsonValue {
     }
 
     return textContent(allocator, text);
+}
+
+fn toolClipboardGet(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const client = try getClient(arguments);
+
+    // Flush pending server messages with multiple update cycles.
+    // ServerCutText may arrive after a FramebufferUpdate response,
+    // so we do two cycles with a delay to catch late clipboard messages.
+    try client.requestUpdate(true);
+    try client.receiveUpdate();
+    std.Thread.sleep(300 * std.time.ns_per_ms);
+    try client.requestUpdate(true);
+    try client.receiveUpdate();
+
+    if (client.getClipboard()) |text| {
+        return textContent(allocator, text);
+    }
+
+    return textContent(allocator, "(clipboard empty — no ServerCutText received yet)");
+}
+
+fn toolOcrRegion(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    const x = getInt(args, "x") orelse return error.InvalidArgument;
+    const y = getInt(args, "y") orelse return error.InvalidArgument;
+    const w = getInt(args, "w") orelse return error.InvalidArgument;
+    const h = getInt(args, "h") orelse return error.InvalidArgument;
+
+    // Build extra params JSON
+    var extra: []u8 = undefined;
+    if (getString(args, "lang")) |lang| {
+        const escaped_lang = try helper.jsonEscape(allocator, lang);
+        defer allocator.free(escaped_lang);
+        extra = try std.fmt.allocPrint(allocator, "\"x\":{d},\"y\":{d},\"w\":{d},\"h\":{d},\"lang\":\"{s}\"", .{ x, y, w, h, escaped_lang });
+    } else {
+        extra = try std.fmt.allocPrint(allocator, "\"x\":{d},\"y\":{d},\"w\":{d},\"h\":{d}", .{ x, y, w, h });
+    }
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "ocr_region", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolUiTree(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    var extra: []u8 = undefined;
+
+    if (arguments) |args| {
+        if (args == .object) {
+            const depth = getInt(args.object, "depth") orelse 3;
+            if (getInt(args.object, "pid")) |pid| {
+                extra = try std.fmt.allocPrint(allocator, "\"depth\":{d},\"pid\":{d}", .{ depth, pid });
+            } else {
+                extra = try std.fmt.allocPrint(allocator, "\"depth\":{d}", .{depth});
+            }
+        } else {
+            extra = try std.fmt.allocPrint(allocator, "\"depth\":3", .{});
+        }
+    } else {
+        extra = try std.fmt.allocPrint(allocator, "\"depth\":3", .{});
+    }
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "ui_tree", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolUiElementText(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    const name = getString(args, "name");
+    const automation_id = getString(args, "automation_id");
+    const control_type = getString(args, "control_type");
+
+    if (name == null and automation_id == null) return error.InvalidArgument;
+
+    // Build extra params
+    var parts = std.ArrayList(u8){};
+    defer parts.deinit(allocator);
+
+    if (name) |n| {
+        const escaped = try helper.jsonEscape(allocator, n);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"name\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (automation_id) |aid| {
+        if (parts.items.len > 0) try parts.append(allocator, ',');
+        const escaped = try helper.jsonEscape(allocator, aid);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"automation_id\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (control_type) |ct| {
+        if (parts.items.len > 0) try parts.append(allocator, ',');
+        const escaped = try helper.jsonEscape(allocator, ct);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"control_type\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+
+    const extra = try allocator.dupe(u8, parts.items);
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "ui_element_text", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolUiClickElement(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    const name = getString(args, "name");
+    const automation_id = getString(args, "automation_id");
+    const control_type = getString(args, "control_type");
+
+    if (name == null and automation_id == null) return error.InvalidArgument;
+
+    // Build extra params
+    var parts = std.ArrayList(u8){};
+    defer parts.deinit(allocator);
+
+    if (name) |n| {
+        const escaped = try helper.jsonEscape(allocator, n);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"name\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (automation_id) |aid| {
+        if (parts.items.len > 0) try parts.append(allocator, ',');
+        const escaped = try helper.jsonEscape(allocator, aid);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"automation_id\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (control_type) |ct| {
+        if (parts.items.len > 0) try parts.append(allocator, ',');
+        const escaped = try helper.jsonEscape(allocator, ct);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"control_type\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+
+    const extra = try allocator.dupe(u8, parts.items);
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "ui_click_element", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
 }

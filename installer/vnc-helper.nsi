@@ -88,6 +88,8 @@ Section "Install"
 
   ; Copy files
   File "vnc-helper.exe"
+  File "vnc-ocr.ps1"
+  File "vnc-uia.ps1"
 
   ; Register in user startup (runs as tray app on login)
   nsExec::ExecToLog '"$INSTDIR\vnc-helper.exe" -port $Port install'
@@ -145,6 +147,8 @@ Section "Uninstall"
 
   ; Remove files
   Delete "$INSTDIR\vnc-helper.exe"
+  Delete "$INSTDIR\vnc-ocr.ps1"
+  Delete "$INSTDIR\vnc-uia.ps1"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
