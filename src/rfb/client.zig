@@ -138,6 +138,15 @@ pub const Client = struct {
     pub fn connect(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8) ClientError!Client {
         const stream = std.net.tcpConnectToHost(allocator, host, port) catch return error.ConnectionFailed;
 
+        // Set socket read timeout to prevent indefinite hangs.
+        // Without this, any tool call that reads from the VNC server
+        // (screenshot, clipboard_get, etc.) can block the MCP server
+        // process forever if the VNC server is unresponsive.
+        const timeout = std.posix.timeval{ .sec = 15, .usec = 0 };
+        std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch |err| {
+            log.warn("failed to set SO_RCVTIMEO: {}", .{err});
+        };
+
         var self = Client{
             .stream = stream,
             .allocator = allocator,
@@ -167,15 +176,22 @@ pub const Client = struct {
         while (total < buf.len) {
             const n = self.stream.read(buf[total..]) catch |err| {
                 log.err("read error: {}", .{err});
+                self.connected = false;
                 return error.Disconnected;
             };
-            if (n == 0) return error.Disconnected;
+            if (n == 0) {
+                self.connected = false;
+                return error.Disconnected;
+            }
             total += n;
         }
     }
 
     fn writeAll(self: *Client, data: []const u8) ClientError!void {
-        self.stream.writeAll(data) catch return error.Disconnected;
+        self.stream.writeAll(data) catch {
+            self.connected = false;
+            return error.Disconnected;
+        };
     }
 
     fn handshake(self: *Client, password: ?[]const u8) ClientError!void {
