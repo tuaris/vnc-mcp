@@ -45,9 +45,14 @@
 
 #include "resource.h"
 
-#define WM_TRAYICON  (WM_USER + 1)
+#define WM_TRAYICON       (WM_USER + 1)
+#define WM_CREATE_MARKER  (WM_APP + 1)   /* worker thread → GUI thread */
 #define IDM_EXIT     1001
 #define IDM_ABOUT    1002
+
+typedef struct {
+    int x, y, duration;
+} MarkerRequest;
 
 /* ================================================================
  * Globals
@@ -1787,7 +1792,8 @@ static LRESULT CALLBACK marker_wnd_proc(HWND hwnd, UINT msg,
 }
 
 /* Create and show a click marker at the given screen coordinates.
- * Must be called from the GUI thread (posts a message to trigger creation). */
+ * MUST be called from the GUI thread (via WM_CREATE_MARKER) so that
+ * SetTimer/WM_TIMER auto-destroy works through the message pump. */
 static void create_click_marker(int cx, int cy, int duration_ms)
 {
     /* Destroy previous marker if still visible */
@@ -1914,12 +1920,15 @@ static void cmd_click_marker(SOCKET sock, const char *json)
 
     log_msg("click_marker: x=%d y=%d duration=%d", x, y, duration);
 
-    /* Must create the overlay window on the GUI thread.
-     * Since we're on a worker thread, post a message to the tray window
-     * and have it call create_click_marker. For simplicity, just call
-     * it directly — CreateWindowEx works from any thread as long as the
-     * message loop processes messages (which it does via GetMessage). */
-    create_click_marker(x, y, duration);
+    /* Post to the GUI thread — windows must be created on the thread
+     * that runs the message pump, otherwise WM_TIMER never fires. */
+    MarkerRequest *req = (MarkerRequest *)malloc(sizeof(MarkerRequest));
+    if (req) {
+        req->x = x;
+        req->y = y;
+        req->duration = duration;
+        PostMessage(g_hwnd, WM_CREATE_MARKER, 0, (LPARAM)req);
+    }
 
     char buf[128];
     snprintf(buf, sizeof(buf),
@@ -2179,6 +2188,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg,
         }
         }
         return 0;
+
+    case WM_CREATE_MARKER: {
+        MarkerRequest *req = (MarkerRequest *)lp;
+        if (req) {
+            create_click_marker(req->x, req->y, req->duration);
+            free(req);
+        }
+        return 0;
+    }
 
     case WM_DESTROY:
         g_running = 0;

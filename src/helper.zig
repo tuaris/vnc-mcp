@@ -3,6 +3,9 @@ const VncAuth = @import("rfb/protocol.zig").VncAuth;
 
 const log = std.log.scoped(.helper);
 
+// EV_EOF is defined in FreeBSD sys/event.h but missing from Zig's std.c.EV
+const EV_EOF: u16 = 0x8000;
+
 /// Escape a string for embedding in a JSON string value.
 pub fn jsonEscape(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var result = std.ArrayList(u8){};
@@ -86,9 +89,42 @@ pub const HelperConnection = struct {
         };
     }
 
+    /// Check if a socket is still alive using kqueue (event-driven, instant).
+    /// Returns false if the remote end has closed (EV_EOF) or an error occurred.
+    fn isSocketAlive(fd: std.posix.fd_t) bool {
+        const kq = std.posix.kqueue() catch return false;
+        defer std.posix.close(kq);
+
+        var changelist = [_]std.posix.Kevent{.{
+            .ident = @intCast(fd),
+            .filter = std.c.EVFILT.READ,
+            .flags = std.c.EV.ADD | std.c.EV.ONESHOT,
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        }};
+        var eventlist: [1]std.posix.Kevent = undefined;
+
+        const timeout = std.posix.timespec{ .sec = 0, .nsec = 0 };
+        const n = std.posix.kevent(kq, &changelist, &eventlist, &timeout) catch return false;
+
+        if (n == 0) return true; // No events — socket is idle and alive
+
+        if (eventlist[0].flags & EV_EOF != 0) return false;
+        if (eventlist[0].flags & std.c.EV.ERROR != 0) return false;
+        // Unexpected data on an idle helper socket means remote closed or protocol desync
+        if (eventlist[0].data > 0) return false;
+
+        return true;
+    }
+
     /// Ensure we have a live TCP connection. Connect + auth if needed.
     fn ensureConnected(self: *HelperConnection) !std.net.Stream {
-        if (self.stream) |s| return s;
+        if (self.stream) |s| {
+            if (isSocketAlive(s.handle)) return s;
+            log.info("stale helper socket detected, reconnecting", .{});
+            self.disconnect();
+        }
 
         const stream = std.net.tcpConnectToHost(self.allocator, self.host, self.port) catch |err| {
             log.warn("helper connection to {s}:{d} failed: {}", .{ self.host, self.port, err });
