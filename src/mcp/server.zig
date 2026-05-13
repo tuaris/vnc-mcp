@@ -208,7 +208,8 @@ pub const McpServer = struct {
             "ALWAYS compute click coordinates from helper-reported window positions (vnc_window_list, vnc_active_window) plus known UI offsets (e.g., title bar ~32px, menu item ~22px). " ++
             "Example: to click 'File' menu, get window position from vnc_active_window (x=164, y=362), then compute File menu at (x+15, y+42).\n" ++
             "9. When adjusting coordinates after a miss, change ONLY ONE axis at a time. If y was wrong, keep x the same. Changing both x and y simultaneously makes it impossible to isolate which adjustment helped.\n" ++
-            "10. Use vnc_probe to verify coordinates BEFORE clicking. After probing, HONESTLY evaluate the returned screenshot — if the marker is NOT on the intended target, do NOT proceed with the click. Adjust and re-probe until the marker visually confirms the target. The probe exists to prevent wasted clicks; ignoring its result defeats its purpose.";
+            "10. Use vnc_probe to verify coordinates BEFORE clicking. After probing, HONESTLY evaluate the returned screenshot — if the marker is NOT on the intended target, do NOT proceed with the click. Adjust and re-probe until the marker visually confirms the target. The probe exists to prevent wasted clicks; ignoring its result defeats its purpose.\n" ++
+            "11. Use vnc_grid for efficient coordinate discovery. It overlays a labeled grid (A1-P12) on the screenshot and returns the center coordinates of every cell. Identify which cell contains your target, then click at that cell's coordinates (with optional offset). This replaces multiple probe calls with a single grid call.";
 
         const escaped_instructions = try jsonEscape(self.allocator, instructions);
         defer self.allocator.free(escaped_instructions);

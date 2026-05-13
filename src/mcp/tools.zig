@@ -212,6 +212,8 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolScreenshot(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_probe")) {
         return toolProbe(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_grid")) {
+        return toolGrid(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_click")) {
         return toolClick(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_type_text")) {
@@ -306,6 +308,69 @@ fn toolProbe(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     defer allocator.free(jpeg);
 
     const meta = try std.fmt.allocPrint(allocator, "Probe marker at ({d}, {d}) — Resolution: {d}x{d} pixels", .{ x, y, fb.width, fb.height });
+    return imageContentWithMeta(allocator, jpeg, meta);
+}
+
+fn toolGrid(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    var cols: u8 = 8;
+    var rows: u8 = 6;
+
+    if (arguments) |args| {
+        if (args == .object) {
+            if (getInt(args.object, "columns")) |c| {
+                cols = @intCast(std.math.clamp(c, 2, 16));
+            }
+            if (getInt(args.object, "rows")) |r| {
+                rows = @intCast(std.math.clamp(r, 2, 12));
+            }
+        }
+    }
+
+    const client = try getClient(arguments);
+    const fb = try client.screenshot();
+
+    const jpeg = try image.encodeJpegWithGrid(allocator, fb, 75, cols, rows);
+    defer allocator.free(jpeg);
+
+    // Build cell coordinate map as text metadata
+    const col_width = @as(u32, fb.width) / @as(u32, cols);
+    const row_height = @as(u32, fb.height) / @as(u32, rows);
+
+    // Format: "Grid 8x6 on 1918x968. Cell size: 239x161. A1=(120,80) A2=(359,80) ..."
+    var meta_buf = std.ArrayList(u8){};
+    defer meta_buf.deinit(allocator);
+
+    const header = try std.fmt.allocPrint(allocator, "Grid {d}x{d} on {d}x{d}px. Cell size: {d}x{d}px.\n", .{ cols, rows, fb.width, fb.height, col_width, row_height });
+    defer allocator.free(header);
+    try meta_buf.appendSlice(allocator, header);
+
+    for (0..@as(usize, rows)) |r_idx| {
+        for (0..@as(usize, cols)) |c_idx| {
+            const cx = @as(u32, @intCast(c_idx)) * col_width + col_width / 2;
+            const cy = @as(u32, @intCast(r_idx)) * row_height + row_height / 2;
+
+            var label: [4]u8 = undefined;
+            var label_len: usize = 0;
+            label[0] = 'A' + @as(u8, @intCast(c_idx));
+            label_len = 1;
+            const row_num = r_idx + 1;
+            if (row_num >= 10) {
+                label[1] = '0' + @as(u8, @intCast(row_num / 10));
+                label[2] = '0' + @as(u8, @intCast(row_num % 10));
+                label_len = 3;
+            } else {
+                label[1] = '0' + @as(u8, @intCast(row_num));
+                label_len = 2;
+            }
+
+            const entry = try std.fmt.allocPrint(allocator, "{s}=({d},{d}) ", .{ label[0..label_len], cx, cy });
+            defer allocator.free(entry);
+            try meta_buf.appendSlice(allocator, entry);
+        }
+        try meta_buf.append(allocator, '\n');
+    }
+
+    const meta = try allocator.dupe(u8, meta_buf.items);
     return imageContentWithMeta(allocator, jpeg, meta);
 }
 

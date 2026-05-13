@@ -141,6 +141,243 @@ pub fn encodeJpegWithMarker(allocator: std.mem.Allocator, fb: *const rfb_client.
     return ctx.toOwnedSlice();
 }
 
+/// Minimal 5x7 bitmap font for grid labels (digits 0-9, uppercase A-Z)
+/// Each glyph is 7 rows of 5 bits, stored MSB-first in the upper 5 bits of each byte.
+const font_5x7 = [36][7]u8{
+    // '0'
+    .{ 0x70, 0x88, 0x98, 0xA8, 0xC8, 0x88, 0x70 },
+    // '1'
+    .{ 0x20, 0x60, 0x20, 0x20, 0x20, 0x20, 0x70 },
+    // '2'
+    .{ 0x70, 0x88, 0x08, 0x10, 0x20, 0x40, 0xF8 },
+    // '3'
+    .{ 0xF8, 0x10, 0x20, 0x10, 0x08, 0x88, 0x70 },
+    // '4'
+    .{ 0x10, 0x30, 0x50, 0x90, 0xF8, 0x10, 0x10 },
+    // '5'
+    .{ 0xF8, 0x80, 0xF0, 0x08, 0x08, 0x88, 0x70 },
+    // '6'
+    .{ 0x30, 0x40, 0x80, 0xF0, 0x88, 0x88, 0x70 },
+    // '7'
+    .{ 0xF8, 0x08, 0x10, 0x20, 0x40, 0x40, 0x40 },
+    // '8'
+    .{ 0x70, 0x88, 0x88, 0x70, 0x88, 0x88, 0x70 },
+    // '9'
+    .{ 0x70, 0x88, 0x88, 0x78, 0x08, 0x10, 0x60 },
+    // 'A'
+    .{ 0x70, 0x88, 0x88, 0xF8, 0x88, 0x88, 0x88 },
+    // 'B'
+    .{ 0xF0, 0x88, 0x88, 0xF0, 0x88, 0x88, 0xF0 },
+    // 'C'
+    .{ 0x70, 0x88, 0x80, 0x80, 0x80, 0x88, 0x70 },
+    // 'D'
+    .{ 0xE0, 0x90, 0x88, 0x88, 0x88, 0x90, 0xE0 },
+    // 'E'
+    .{ 0xF8, 0x80, 0x80, 0xF0, 0x80, 0x80, 0xF8 },
+    // 'F'
+    .{ 0xF8, 0x80, 0x80, 0xF0, 0x80, 0x80, 0x80 },
+    // 'G'
+    .{ 0x70, 0x88, 0x80, 0xB8, 0x88, 0x88, 0x70 },
+    // 'H'
+    .{ 0x88, 0x88, 0x88, 0xF8, 0x88, 0x88, 0x88 },
+    // 'I'
+    .{ 0x70, 0x20, 0x20, 0x20, 0x20, 0x20, 0x70 },
+    // 'J'
+    .{ 0x38, 0x10, 0x10, 0x10, 0x10, 0x90, 0x60 },
+    // 'K'
+    .{ 0x88, 0x90, 0xA0, 0xC0, 0xA0, 0x90, 0x88 },
+    // 'L'
+    .{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0xF8 },
+    // 'M'
+    .{ 0x88, 0xD8, 0xA8, 0xA8, 0x88, 0x88, 0x88 },
+    // 'N'
+    .{ 0x88, 0xC8, 0xA8, 0x98, 0x88, 0x88, 0x88 },
+    // 'O'
+    .{ 0x70, 0x88, 0x88, 0x88, 0x88, 0x88, 0x70 },
+    // 'P'
+    .{ 0xF0, 0x88, 0x88, 0xF0, 0x80, 0x80, 0x80 },
+    // 'Q' (unused but kept for completeness)
+    .{ 0x70, 0x88, 0x88, 0x88, 0xA8, 0x90, 0x68 },
+    // 'R' (unused)
+    .{ 0xF0, 0x88, 0x88, 0xF0, 0xA0, 0x90, 0x88 },
+    // 'S' (unused)
+    .{ 0x70, 0x88, 0x80, 0x70, 0x08, 0x88, 0x70 },
+    // 'T' (unused)
+    .{ 0xF8, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20 },
+    // 'U' (unused)
+    .{ 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x70 },
+    // 'V' (unused)
+    .{ 0x88, 0x88, 0x88, 0x88, 0x88, 0x50, 0x20 },
+    // 'W' (unused)
+    .{ 0x88, 0x88, 0x88, 0xA8, 0xA8, 0xD8, 0x88 },
+    // 'X' (unused)
+    .{ 0x88, 0x88, 0x50, 0x20, 0x50, 0x88, 0x88 },
+    // 'Y' (unused)
+    .{ 0x88, 0x88, 0x50, 0x20, 0x20, 0x20, 0x20 },
+    // 'Z' (unused)
+    .{ 0xF8, 0x08, 0x10, 0x20, 0x40, 0x80, 0xF8 },
+};
+
+/// Get glyph index for a character (0-9 → 0-9, A-Z → 10-35), null if unsupported
+fn glyphIndex(ch: u8) ?usize {
+    if (ch >= '0' and ch <= '9') return ch - '0';
+    if (ch >= 'A' and ch <= 'Z') return (ch - 'A') + 10;
+    if (ch >= 'a' and ch <= 'z') return (ch - 'a') + 10;
+    return null;
+}
+
+/// Draw a single character at (px, py) with given scale and color on RGB888 buffer
+fn drawChar(rgb: []u8, width: u16, height: u16, ch: u8, px: i32, py: i32, scale: u8, r: u8, g: u8, b: u8) void {
+    const idx = glyphIndex(ch) orelse return;
+    const glyph = font_5x7[idx];
+    const w = @as(i32, width);
+    const h = @as(i32, height);
+    const sc = @as(i32, scale);
+
+    for (0..7) |row| {
+        const row_data = glyph[row];
+        for (0..5) |col| {
+            // Check if pixel is set (MSB-first, bits 7..3 represent columns 0..4)
+            const bit: u3 = @intCast(7 - col);
+            if ((row_data >> bit) & 1 == 0) continue;
+
+            // Draw scaled pixel block
+            var sy: i32 = 0;
+            while (sy < sc) : (sy += 1) {
+                var sx: i32 = 0;
+                while (sx < sc) : (sx += 1) {
+                    const fx = px + @as(i32, @intCast(col)) * sc + sx;
+                    const fy = py + @as(i32, @intCast(row)) * sc + sy;
+                    if (fx < 0 or fy < 0 or fx >= w or fy >= h) continue;
+                    const offset: usize = (@as(usize, @intCast(fy)) * @as(usize, @intCast(w)) + @as(usize, @intCast(fx))) * 3;
+                    if (offset + 2 < rgb.len) {
+                        rgb[offset] = r;
+                        rgb[offset + 1] = g;
+                        rgb[offset + 2] = b;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Draw a string at (px, py) with given scale and color on RGB888 buffer
+fn drawString(rgb: []u8, width: u16, height: u16, text: []const u8, px: i32, py: i32, scale: u8, r: u8, g: u8, b: u8) void {
+    const char_width = @as(i32, scale) * 6; // 5px glyph + 1px spacing
+    var x = px;
+    for (text) |ch| {
+        drawChar(rgb, width, height, ch, x, py, scale, r, g, b);
+        x += char_width;
+    }
+}
+
+/// Draw a labeled grid overlay on RGB888 pixel data.
+/// Columns labeled A-P, rows labeled 1-12. Each cell center coordinate returned via metadata.
+pub fn drawGrid(rgb: []u8, width: u16, height: u16, cols: u8, rows: u8) void {
+    const w = @as(i32, width);
+    const h = @as(i32, height);
+    const col_width = @divFloor(w, @as(i32, cols));
+    const row_height = @divFloor(h, @as(i32, rows));
+
+    // Draw vertical gridlines (cyan, 1px)
+    for (1..@as(usize, cols)) |ci| {
+        const x = @as(i32, @intCast(ci)) * col_width;
+        if (x >= w) continue;
+        var y: i32 = 0;
+        while (y < h) : (y += 1) {
+            const offset: usize = (@as(usize, @intCast(y)) * @as(usize, @intCast(w)) + @as(usize, @intCast(x))) * 3;
+            if (offset + 2 < rgb.len) {
+                // Cyan with some transparency effect (blend toward cyan)
+                rgb[offset] = rgb[offset] / 2;
+                rgb[offset + 1] = @as(u8, @intCast((@as(u16, rgb[offset + 1]) + 255) / 2));
+                rgb[offset + 2] = @as(u8, @intCast((@as(u16, rgb[offset + 2]) + 255) / 2));
+            }
+        }
+    }
+
+    // Draw horizontal gridlines (cyan, 1px)
+    for (1..@as(usize, rows)) |r_idx| {
+        const y = @as(i32, @intCast(r_idx)) * row_height;
+        if (y >= h) continue;
+        var x: i32 = 0;
+        while (x < w) : (x += 1) {
+            const offset: usize = (@as(usize, @intCast(y)) * @as(usize, @intCast(w)) + @as(usize, @intCast(x))) * 3;
+            if (offset + 2 < rgb.len) {
+                rgb[offset] = rgb[offset] / 2;
+                rgb[offset + 1] = @as(u8, @intCast((@as(u16, rgb[offset + 1]) + 255) / 2));
+                rgb[offset + 2] = @as(u8, @intCast((@as(u16, rgb[offset + 2]) + 255) / 2));
+            }
+        }
+    }
+
+    // Draw cell labels at center of each cell (white text with black outline for contrast)
+    const scale: u8 = 2; // 10x14 pixel characters
+    for (0..@as(usize, rows)) |r_idx| {
+        for (0..@as(usize, cols)) |c_idx| {
+            const cx = @as(i32, @intCast(c_idx)) * col_width + @divFloor(col_width, 2);
+            const cy = @as(i32, @intCast(r_idx)) * row_height + @divFloor(row_height, 2);
+
+            // Build label: column letter + row number (e.g., "A1", "B12")
+            var label: [4]u8 = undefined;
+            var label_len: usize = 0;
+            label[0] = 'A' + @as(u8, @intCast(c_idx));
+            label_len = 1;
+
+            const row_num = r_idx + 1;
+            if (row_num >= 10) {
+                label[1] = '0' + @as(u8, @intCast(row_num / 10));
+                label[2] = '0' + @as(u8, @intCast(row_num % 10));
+                label_len = 3;
+            } else {
+                label[1] = '0' + @as(u8, @intCast(row_num));
+                label_len = 2;
+            }
+
+            // Center the label
+            const text_width = @as(i32, @intCast(label_len)) * @as(i32, scale) * 6;
+            const text_height = @as(i32, scale) * 7;
+            const lx = cx - @divFloor(text_width, 2);
+            const ly = cy - @divFloor(text_height, 2);
+
+            // Draw black outline (offset by 1 in each direction)
+            const offsets = [_][2]i32{ .{ -1, -1 }, .{ 0, -1 }, .{ 1, -1 }, .{ -1, 0 }, .{ 1, 0 }, .{ -1, 1 }, .{ 0, 1 }, .{ 1, 1 } };
+            for (offsets) |off| {
+                drawString(rgb, width, height, label[0..label_len], lx + off[0], ly + off[1], scale, 0, 0, 0);
+            }
+            // Draw white text
+            drawString(rgb, width, height, label[0..label_len], lx, ly, scale, 255, 255, 255);
+        }
+    }
+}
+
+/// Encode a framebuffer as JPEG with a grid overlay
+pub fn encodeJpegWithGrid(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffer, quality: u8, cols: u8, rows: u8) ![]u8 {
+    const rgb = try fb.toRgb888(allocator);
+    defer allocator.free(rgb);
+
+    drawGrid(rgb, fb.width, fb.height, cols, rows);
+
+    var ctx = WriteContext{ .allocator = allocator };
+    errdefer ctx.deinit();
+
+    const result = c.stbi_write_jpg_to_func(
+        stbWriteCallback,
+        &ctx,
+        @intCast(fb.width),
+        @intCast(fb.height),
+        3,
+        rgb.ptr,
+        @intCast(@min(quality, 100)),
+    );
+
+    if (result == 0) {
+        ctx.deinit();
+        return error.EncodingFailed;
+    }
+
+    return ctx.toOwnedSlice();
+}
+
 /// Encode a framebuffer as PNG and return the bytes
 pub fn encodePng(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffer) ![]u8 {
     const rgb = try fb.toRgb888(allocator);
