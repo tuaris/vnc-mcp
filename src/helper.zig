@@ -155,6 +155,15 @@ pub const HelperConnection = struct {
         }
     }
 
+    /// Shutdown the read side of the socket without closing it.
+    /// This unblocks any thread blocked in recv() — it will see EOF (read returns 0).
+    /// The socket is NOT closed here; the worker thread's error path will call disconnect().
+    pub fn shutdown(self: *HelperConnection) void {
+        if (self.stream) |s| {
+            std.posix.shutdown(s.handle, .recv) catch {};
+        }
+    }
+
     /// Read one newline-delimited response from the stream.
     fn readResponse(self: *HelperConnection, stream: std.net.Stream) ![]u8 {
         var response = std.ArrayList(u8){};

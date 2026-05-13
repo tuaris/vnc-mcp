@@ -1,4 +1,5 @@
 const std = @import("std");
+const tools_mod = @import("tools.zig");
 
 const log = std.log.scoped(.mcp);
 
@@ -262,8 +263,8 @@ pub const McpServer = struct {
 
         // Execute tool with timeout to prevent indefinite IDE hangs (R6).
         // Spawn tool on a worker thread; main thread polls completion with
-        // a 45-second deadline. If the worker hasn't finished, respond with
-        // an error and detach the thread (it will finish on its own).
+        // a 45-second deadline. If the worker hasn't finished, shutdown the
+        // helper socket to unblock any pending recv(), then join the thread.
         const timeout_ns: u64 = 45 * std.time.ns_per_s;
         const ToolCtx = struct {
             value: ?JsonValue = null,
@@ -291,14 +292,35 @@ pub const McpServer = struct {
 
         // Poll for completion with 100ms intervals
         const deadline = @as(u64, @intCast(std.time.nanoTimestamp())) + timeout_ns;
+        var timed_out = false;
         while (!tool_ctx.done.load(.acquire)) {
             if (@as(u64, @intCast(std.time.nanoTimestamp())) >= deadline) {
-                log.err("tool call '{s}' timed out after 45s", .{name});
-                try self.sendToolError(id, "Tool call timed out after 45 seconds");
-                thread.detach();
-                return;
+                timed_out = true;
+                log.err("tool call '{s}' timed out after 45s — interrupting", .{name});
+
+                // Shutdown the helper socket to unblock read() in the worker.
+                // This makes stream.read() return 0 (EOF), which triggers
+                // disconnect() and the worker exits cleanly.
+                if (tools_mod.helper_connections) |h_pool| {
+                    h_pool.shutdownAll();
+                }
+                break;
             }
             std.Thread.sleep(100 * std.time.ns_per_ms);
+        }
+
+        // Always join — after shutdown, worker will unblock and exit promptly.
+        // Give it a brief grace period, then join unconditionally.
+        if (timed_out) {
+            // Wait up to 5s for worker to notice the shutdown and exit
+            const grace_deadline = @as(u64, @intCast(std.time.nanoTimestamp())) + 5 * std.time.ns_per_s;
+            while (!tool_ctx.done.load(.acquire)) {
+                if (@as(u64, @intCast(std.time.nanoTimestamp())) >= grace_deadline) break;
+                std.Thread.sleep(50 * std.time.ns_per_ms);
+            }
+            thread.detach(); // Last resort if worker is truly stuck
+            try self.sendToolError(id, "Tool call timed out after 45 seconds");
+            return;
         }
         thread.join();
 

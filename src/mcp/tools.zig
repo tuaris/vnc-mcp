@@ -10,7 +10,7 @@ const JsonValue = std.json.Value;
 
 /// Connection pool — maps endpoint ID to active RFB client
 var connections: ?*ConnectionPool = null;
-var helper_connections: ?*HelperPool = null;
+pub var helper_connections: ?*HelperPool = null;
 var global_registry: ?*registry_mod.Registry = null;
 var global_allocator: std.mem.Allocator = undefined;
 
@@ -91,6 +91,16 @@ pub const HelperPool = struct {
         const conn = helper.HelperConnection.init(self.allocator, ep.host, ep.helper_port, password);
         try self.entries.put(ep.id, conn);
         return self.entries.getPtr(ep.id).?;
+    }
+
+    /// Shutdown the read side of all active helper sockets.
+    /// This unblocks any worker thread stuck in recv(), causing it to
+    /// see EOF and exit cleanly. Used by the R6 timeout handler.
+    pub fn shutdownAll(self: *HelperPool) void {
+        var it = self.entries.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.shutdown();
+        }
     }
 };
 
