@@ -210,6 +210,8 @@ fn imageContent(allocator: std.mem.Allocator, jpeg_data: []const u8) !JsonValue 
 pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?JsonValue) anyerror!JsonValue {
     if (std.mem.eql(u8, name, "vnc_screenshot")) {
         return toolScreenshot(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_probe")) {
+        return toolProbe(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_click")) {
         return toolClick(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_type_text")) {
@@ -288,6 +290,22 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
 
     // Include resolution metadata so AI agents can compute coordinates
     const meta = try std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ fb.width, fb.height });
+    return imageContentWithMeta(allocator, jpeg, meta);
+}
+
+fn toolProbe(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    const x: u16 = @intCast(getInt(args, "x") orelse return error.InvalidArgument);
+    const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
+
+    const client = try getClient(arguments);
+    const fb = try client.screenshot();
+
+    const jpeg = try image.encodeJpegWithMarker(allocator, fb, 75, x, y);
+    defer allocator.free(jpeg);
+
+    const meta = try std.fmt.allocPrint(allocator, "Probe marker at ({d}, {d}) — Resolution: {d}x{d} pixels", .{ x, y, fb.width, fb.height });
     return imageContentWithMeta(allocator, jpeg, meta);
 }
 

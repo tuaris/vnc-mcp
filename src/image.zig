@@ -42,6 +42,50 @@ fn stbWriteCallback(context: ?*anyopaque, data: ?*anyopaque, size: c_int) callco
     ctx.appendData(ptr[0..len]);
 }
 
+/// Draw a yellow circle marker with crosshair on RGB888 pixel data.
+/// Pure pixel math — no external library, no Windows interaction.
+pub fn drawMarker(rgb: []u8, width: u16, height: u16, cx: u16, cy: u16, radius: u16, stroke: u16) void {
+    const r = @as(i32, radius);
+    const s = @as(i32, stroke);
+    const w = @as(i32, width);
+    const h = @as(i32, height);
+    const mcx = @as(i32, cx);
+    const mcy = @as(i32, cy);
+
+    // Bounding box
+    const x0 = @max(mcx - r - s, 0);
+    const y0 = @max(mcy - r - s, 0);
+    const x1 = @min(mcx + r + s, w - 1);
+    const y1 = @min(mcy + r + s, h - 1);
+
+    var py = y0;
+    while (py <= y1) : (py += 1) {
+        var px = x0;
+        while (px <= x1) : (px += 1) {
+            const dx = px - mcx;
+            const dy = py - mcy;
+            const dist_sq = dx * dx + dy * dy;
+            const inner = (r - s) * (r - s);
+            const outer = (r + s) * (r + s);
+
+            // Ring: between inner and outer radius
+            const on_ring = dist_sq >= inner and dist_sq <= outer;
+            // Crosshair: thin lines through center (2px wide)
+            const on_cross = (@abs(dx) <= 1 and @abs(dy) <= r) or
+                (@abs(dy) <= 1 and @abs(dx) <= r);
+
+            if (on_ring or on_cross) {
+                const idx: usize = (@as(usize, @intCast(py)) * @as(usize, @intCast(w)) + @as(usize, @intCast(px))) * 3;
+                if (idx + 2 < rgb.len) {
+                    rgb[idx] = 255; // R
+                    rgb[idx + 1] = 255; // G
+                    rgb[idx + 2] = 0; // B — yellow
+                }
+            }
+        }
+    }
+}
+
 /// Encode a framebuffer as JPEG and return the bytes
 pub fn encodeJpeg(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffer, quality: u8) ![]u8 {
     // Convert framebuffer to packed RGB888
@@ -57,6 +101,34 @@ pub fn encodeJpeg(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffe
         @intCast(fb.width),
         @intCast(fb.height),
         3, // RGB components
+        rgb.ptr,
+        @intCast(@min(quality, 100)),
+    );
+
+    if (result == 0) {
+        ctx.deinit();
+        return error.EncodingFailed;
+    }
+
+    return ctx.toOwnedSlice();
+}
+
+/// Encode a framebuffer as JPEG with a yellow marker drawn at (cx, cy)
+pub fn encodeJpegWithMarker(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffer, quality: u8, cx: u16, cy: u16) ![]u8 {
+    const rgb = try fb.toRgb888(allocator);
+    defer allocator.free(rgb);
+
+    drawMarker(rgb, fb.width, fb.height, cx, cy, 20, 2);
+
+    var ctx = WriteContext{ .allocator = allocator };
+    errdefer ctx.deinit();
+
+    const result = c.stbi_write_jpg_to_func(
+        stbWriteCallback,
+        &ctx,
+        @intCast(fb.width),
+        @intCast(fb.height),
+        3,
         rgb.ptr,
         @intCast(@min(quality, 100)),
     );
