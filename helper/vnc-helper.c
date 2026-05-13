@@ -847,9 +847,25 @@ static void cmd_set_active_window(SOCKET sock, const char *json)
     if (IsIconic(ctx.found))
         ShowWindow(ctx.found, SW_RESTORE);
 
-    /* Bring to foreground */
+    /* Bring to foreground — use AttachThreadInput trick to bypass
+     * the Windows foreground lock (SetForegroundWindow alone fails
+     * if our process doesn't own the current foreground window). */
+    DWORD fg_tid = GetWindowThreadProcessId(GetForegroundWindow(), NULL);
+    DWORD tgt_tid = GetWindowThreadProcessId(ctx.found, NULL);
+    DWORD our_tid = GetCurrentThreadId();
+    if (fg_tid != our_tid)
+        AttachThreadInput(our_tid, fg_tid, TRUE);
+    if (tgt_tid != our_tid && tgt_tid != fg_tid)
+        AttachThreadInput(our_tid, tgt_tid, TRUE);
+
     SetForegroundWindow(ctx.found);
     BringWindowToTop(ctx.found);
+    SetFocus(ctx.found);
+
+    if (tgt_tid != our_tid && tgt_tid != fg_tid)
+        AttachThreadInput(our_tid, tgt_tid, FALSE);
+    if (fg_tid != our_tid)
+        AttachThreadInput(our_tid, fg_tid, FALSE);
 
     /* Report what we focused */
     char wt[512] = {0}, wc[256] = {0};
