@@ -481,22 +481,55 @@ pub const Client = struct {
         }
     }
 
+    /// Wait for data on the VNC socket using kqueue (event-driven).
+    /// Returns true if data is available, false on timeout or error.
+    fn waitForData(self: *Client, timeout_ms: u32) bool {
+        const EV_EOF: u16 = 0x8000;
+        const kq = std.posix.kqueue() catch return false;
+        defer std.posix.close(kq);
+
+        var changelist = [_]std.posix.Kevent{.{
+            .ident = @intCast(self.stream.handle),
+            .filter = std.c.EVFILT.READ,
+            .flags = std.c.EV.ADD | std.c.EV.ONESHOT,
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        }};
+        var eventlist: [1]std.posix.Kevent = undefined;
+
+        const sec: isize = @intCast(timeout_ms / 1000);
+        const nsec: isize = @intCast((@as(u64, timeout_ms) % 1000) * 1_000_000);
+        const timeout = std.posix.timespec{ .sec = sec, .nsec = nsec };
+
+        const n = std.posix.kevent(kq, &changelist, &eventlist, &timeout) catch return false;
+        if (n == 0) return false;
+        if (eventlist[0].flags & EV_EOF != 0) return false;
+        return eventlist[0].data > 0;
+    }
+
     /// Capture the current framebuffer as a screenshot
     pub fn screenshot(self: *Client) ClientError!*const Framebuffer {
-        // TightVNC caches the screen and updates it via polling (every ~100ms).
-        // If we request immediately after an action, we get the stale cached frame.
-        // Strategy:
-        //   1. Send a non-incremental request to trigger TightVNC's screen capture
-        //   2. Wait for the polling cycle to complete and fresh frame to arrive
-        //   3. Send another non-incremental request to get the definitive current screen
+        // Strategy: request incremental updates and wait for actual server
+        // data using kqueue. This adapts to TightVNC's polling cycle —
+        // returns as soon as the frame stabilizes instead of blind sleeping.
+        //
+        // 1. Non-incremental request for baseline frame
+        // 2. Incremental requests to flush pending screen changes
+        // 3. When no more data arrives within timeout, frame is current
         try self.requestUpdate(false);
         try self.receiveUpdate();
 
-        // Wait long enough for TightVNC's screen polling to detect any recent
-        // changes (action → Windows render → VNC poll → capture)
-        std.Thread.sleep(500 * std.time.ns_per_ms);
+        // Flush pending changes: request incremental updates until the
+        // server has nothing new (kqueue timeout = frame is stable)
+        var rounds: u32 = 0;
+        while (rounds < 5) : (rounds += 1) {
+            try self.requestUpdate(true);
+            if (!self.waitForData(300)) break; // No data — frame is stable
+            try self.receiveUpdate();
+        }
 
-        // Second request: guaranteed fresh after the polling delay
+        // Final non-incremental capture for a clean definitive frame
         try self.requestUpdate(false);
         try self.receiveUpdate();
 
