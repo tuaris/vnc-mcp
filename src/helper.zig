@@ -95,6 +95,10 @@ pub const HelperConnection = struct {
             return error.ConnectionFailed;
         };
 
+        // Set read timeout to prevent blocking forever on stale/dead connections
+        const timeout = std.posix.timeval{ .sec = 30, .usec = 0 };
+        std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+
         if (self.password != null and self.password.?.len > 0) {
             authenticate(stream, self.password) catch |err| {
                 stream.close();
