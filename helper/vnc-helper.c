@@ -37,7 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VNC_HELPER_VERSION "0.1.0"
+#define VNC_HELPER_VERSION "0.2.0"
 #define DEFAULT_PORT       9800
 #define MAX_REQUEST        65536
 #define MAX_RESPONSE       (2 * 1024 * 1024)
@@ -770,6 +770,204 @@ static void cmd_active_window(SOCKET sock)
              (int)rect.left, (int)rect.top,
              (int)(rect.right - rect.left), (int)(rect.bottom - rect.top),
              (unsigned long)pid);
+    send_line(sock, buf);
+}
+
+/* ================================================================
+ * Command: set_active_window
+ *
+ * Activate/focus a window by title substring, class name, or PID.
+ * Uses SetForegroundWindow + BringWindowToTop.
+ * ================================================================ */
+
+typedef struct {
+    const char *title;
+    const char *classname;
+    DWORD pid;
+    HWND  found;
+} FindWinCtx;
+
+static BOOL CALLBACK find_window_cb(HWND hwnd, LPARAM lparam)
+{
+    FindWinCtx *ctx = (FindWinCtx *)lparam;
+    if (!IsWindowVisible(hwnd)) return TRUE;
+
+    if (ctx->pid) {
+        DWORD wpid = 0;
+        GetWindowThreadProcessId(hwnd, &wpid);
+        if (wpid == ctx->pid) { ctx->found = hwnd; return FALSE; }
+    }
+
+    if (ctx->title && ctx->title[0]) {
+        char wt[512] = {0};
+        GetWindowTextA(hwnd, wt, sizeof(wt));
+        if (wt[0] && strstr(wt, ctx->title)) { ctx->found = hwnd; return FALSE; }
+    }
+
+    if (ctx->classname && ctx->classname[0]) {
+        char wc[256] = {0};
+        GetClassNameA(hwnd, wc, sizeof(wc));
+        if (wc[0] && strcmp(wc, ctx->classname) == 0) { ctx->found = hwnd; return FALSE; }
+    }
+
+    return TRUE;
+}
+
+static void cmd_set_active_window(SOCKET sock, const char *json)
+{
+    char title[512] = {0};
+    char classname[256] = {0};
+    int  pid = 0;
+
+    json_get_string(json, "title", title, sizeof(title));
+    json_get_string(json, "class", classname, sizeof(classname));
+    json_get_int(json, "pid", &pid);
+
+    if (!title[0] && !classname[0] && !pid) {
+        send_error(sock, "Provide at least one of: title, class, pid");
+        return;
+    }
+
+    log_msg("set_active_window: title='%s' class='%s' pid=%d", title, classname, pid);
+
+    FindWinCtx ctx;
+    ctx.title     = title;
+    ctx.classname = classname;
+    ctx.pid       = (DWORD)pid;
+    ctx.found     = NULL;
+
+    EnumWindows(find_window_cb, (LPARAM)&ctx);
+
+    if (!ctx.found) {
+        send_error(sock, "No matching window found");
+        return;
+    }
+
+    /* Restore if minimized */
+    if (IsIconic(ctx.found))
+        ShowWindow(ctx.found, SW_RESTORE);
+
+    /* Bring to foreground */
+    SetForegroundWindow(ctx.found);
+    BringWindowToTop(ctx.found);
+
+    /* Report what we focused */
+    char wt[512] = {0}, wc[256] = {0};
+    DWORD wpid = 0;
+    RECT rect = {0};
+    GetWindowTextA(ctx.found, wt, sizeof(wt));
+    GetClassNameA(ctx.found, wc, sizeof(wc));
+    GetWindowRect(ctx.found, &rect);
+    GetWindowThreadProcessId(ctx.found, &wpid);
+
+    char wt_esc[1024], wc_esc[512];
+    json_escape(wt, wt_esc, sizeof(wt_esc));
+    json_escape(wc, wc_esc, sizeof(wc_esc));
+
+    char buf[2048];
+    snprintf(buf, sizeof(buf),
+             "{\"status\":\"ok\",\"data\":{\"title\":\"%s\",\"class\":\"%s\","
+             "\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"pid\":%lu}}",
+             wt_esc, wc_esc,
+             (int)rect.left, (int)rect.top,
+             (int)(rect.right - rect.left), (int)(rect.bottom - rect.top),
+             (unsigned long)wpid);
+    send_line(sock, buf);
+}
+
+/* ================================================================
+ * Command: clipboard_get  (Windows API, CF_UNICODETEXT)
+ * ================================================================ */
+
+static void cmd_clipboard_get(SOCKET sock)
+{
+    if (!OpenClipboard(NULL)) {
+        send_error(sock, "Failed to open clipboard");
+        return;
+    }
+
+    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+    if (!hData) {
+        CloseClipboard();
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "{\"status\":\"ok\",\"data\":{\"text\":\"\"}}");
+        send_line(sock, buf);
+        return;
+    }
+
+    WCHAR *wide = (WCHAR *)GlobalLock(hData);
+    if (!wide) {
+        CloseClipboard();
+        send_error(sock, "Failed to lock clipboard data");
+        return;
+    }
+
+    /* Convert UTF-16 to UTF-8 */
+    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    char *utf8 = (char *)malloc(utf8_len);
+    WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, utf8_len, NULL, NULL);
+
+    GlobalUnlock(hData);
+    CloseClipboard();
+
+    /* JSON-escape the text */
+    char *escaped = (char *)malloc(utf8_len * 6 + 1);
+    json_escape(utf8, escaped, utf8_len * 6 + 1);
+    free(utf8);
+
+    char *response = (char *)malloc(MAX_RESPONSE);
+    snprintf(response, MAX_RESPONSE,
+             "{\"status\":\"ok\",\"data\":{\"text\":\"%s\"}}", escaped);
+    send_line(sock, response);
+
+    free(escaped);
+    free(response);
+}
+
+/* ================================================================
+ * Command: clipboard_set  (Windows API, CF_UNICODETEXT)
+ * ================================================================ */
+
+static void cmd_clipboard_set(SOCKET sock, const char *json)
+{
+    /* Extract UTF-8 text from JSON */
+    char *text = (char *)malloc(MAX_REQUEST);
+    if (!json_get_string(json, "text", text, MAX_REQUEST)) {
+        free(text);
+        send_error(sock, "Missing 'text' parameter");
+        return;
+    }
+
+    log_msg("clipboard_set: %d bytes", (int)strlen(text));
+
+    /* Convert UTF-8 to UTF-16 */
+    int wide_len = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, wide_len * sizeof(WCHAR));
+    if (!hMem) {
+        free(text);
+        send_error(sock, "GlobalAlloc failed");
+        return;
+    }
+
+    WCHAR *wide = (WCHAR *)GlobalLock(hMem);
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, wide_len);
+    GlobalUnlock(hMem);
+    free(text);
+
+    if (!OpenClipboard(NULL)) {
+        GlobalFree(hMem);
+        send_error(sock, "Failed to open clipboard");
+        return;
+    }
+
+    EmptyClipboard();
+    SetClipboardData(CF_UNICODETEXT, hMem);
+    CloseClipboard();
+    /* Note: hMem is now owned by the clipboard — do NOT free it */
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"status\":\"ok\",\"data\":{\"set\":true}}");
     send_line(sock, buf);
 }
 
@@ -1988,6 +2186,9 @@ static void handle_client(SOCKET sock)
         if      (strcmp(command, "cursor_position") == 0) cmd_cursor_position(sock);
         else if (strcmp(command, "window_list")     == 0) cmd_window_list(sock);
         else if (strcmp(command, "active_window")   == 0) cmd_active_window(sock);
+        else if (strcmp(command, "set_active_window") == 0) cmd_set_active_window(sock, request);
+        else if (strcmp(command, "clipboard_get")   == 0) cmd_clipboard_get(sock);
+        else if (strcmp(command, "clipboard_set")   == 0) cmd_clipboard_set(sock, request);
         else if (strcmp(command, "run_command")     == 0) cmd_run_command(sock, request);
         else if (strcmp(command, "screen_info")     == 0) cmd_screen_info(sock);
         else if (strcmp(command, "file_upload")     == 0) cmd_file_upload(sock, request);

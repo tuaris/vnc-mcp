@@ -206,6 +206,12 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolWindowList(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_active_window")) {
         return toolActiveWindow(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_set_active_window")) {
+        return toolSetActiveWindow(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_helper_clipboard_get")) {
+        return toolHelperClipboardGet(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_helper_clipboard_set")) {
+        return toolHelperClipboardSet(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_run_command")) {
         return toolRunCommand(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_screen_info")) {
@@ -570,6 +576,80 @@ fn toolActiveWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
     return textContent(allocator, response);
 }
 
+fn toolSetActiveWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    var parts: [3][]const u8 = undefined;
+    var part_count: usize = 0;
+
+    if (getString(args, "title")) |t| {
+        const escaped = try helper.jsonEscape(allocator, t);
+        defer allocator.free(escaped);
+        const part = try std.fmt.allocPrint(allocator, "\"title\":\"{s}\"", .{escaped});
+        parts[part_count] = part;
+        part_count += 1;
+    }
+    if (getString(args, "class")) |c| {
+        const escaped = try helper.jsonEscape(allocator, c);
+        defer allocator.free(escaped);
+        const part = try std.fmt.allocPrint(allocator, "\"class\":\"{s}\"", .{escaped});
+        parts[part_count] = part;
+        part_count += 1;
+    }
+    if (getInt(args, "pid")) |p| {
+        const part = try std.fmt.allocPrint(allocator, "\"pid\":{d}", .{p});
+        parts[part_count] = part;
+        part_count += 1;
+    }
+
+    if (part_count == 0) return textContent(allocator, "Provide at least one of: title, class, pid");
+
+    // Join parts with commas
+    var extra = try allocator.alloc(u8, 0);
+    for (0..part_count) |i| {
+        const old = extra;
+        if (i == 0) {
+            extra = try allocator.dupe(u8, parts[i]);
+        } else {
+            extra = try std.fmt.allocPrint(allocator, "{s},{s}", .{ old, parts[i] });
+            allocator.free(old);
+        }
+        allocator.free(parts[i]);
+    }
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "set_active_window", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolHelperClipboardGet(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const response = callHelper(allocator, arguments, "clipboard_get", null) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolHelperClipboardSet(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const text = getString(args, "text") orelse return error.InvalidArgument;
+
+    const escaped = try helper.jsonEscape(allocator, text);
+    defer allocator.free(escaped);
+
+    const extra = try std.fmt.allocPrint(allocator, "\"text\":\"{s}\"", .{escaped});
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "clipboard_set", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
 fn toolRunCommand(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
     const cmd_str = getString(args, "cmd") orelse return error.InvalidArgument;
@@ -681,15 +761,21 @@ fn toolDownloadFile(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
 
     // Decode base64
     const b64_decoder = std.base64.standard;
-    const decoded_len = b64_decoder.Decoder.calcSizeUpperBound(content_b64.?.len) catch {
+    const b64 = content_b64.?;
+    const decoded_upper = b64_decoder.Decoder.calcSizeUpperBound(b64.len) catch {
         return textContent(allocator, "Invalid base64 content from helper");
     };
-    const decoded_buf = try allocator.alloc(u8, decoded_len);
+    const decoded_buf = try allocator.alloc(u8, decoded_upper);
     defer allocator.free(decoded_buf);
 
-    b64_decoder.Decoder.decode(decoded_buf, content_b64.?) catch {
+    b64_decoder.Decoder.decode(decoded_buf, b64) catch {
         return textContent(allocator, "Failed to decode base64 content from helper");
     };
+
+    // Calculate exact decoded size from base64 padding (upper bound may be 1-2 bytes too large)
+    var exact_len = (b64.len / 4) * 3;
+    if (b64.len > 0 and b64[b64.len - 1] == '=') exact_len -= 1;
+    if (b64.len > 1 and b64[b64.len - 2] == '=') exact_len -= 1;
 
     // Write to local file
     const out_file = std.fs.createFileAbsolute(local_path, .{}) catch |err| {
@@ -697,12 +783,12 @@ fn toolDownloadFile(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
         return textContent(allocator, msg);
     };
     defer out_file.close();
-    out_file.writeAll(decoded_buf[0..decoded_len]) catch |err| {
+    out_file.writeAll(decoded_buf[0..exact_len]) catch |err| {
         const msg = try std.fmt.allocPrint(allocator, "Failed to write local file: {}", .{err});
         return textContent(allocator, msg);
     };
 
-    const msg = try std.fmt.allocPrint(allocator, "Downloaded {d} bytes from {s} to {s}", .{ decoded_len, remote_path, local_path });
+    const msg = try std.fmt.allocPrint(allocator, "Downloaded {d} bytes from {s} to {s}", .{ exact_len, remote_path, local_path });
     return textContent(allocator, msg);
 }
 
