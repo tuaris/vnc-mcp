@@ -2812,6 +2812,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         freopen("CONOUT$", "w", stderr);
     }
 
+    /* Single-instance enforcement via named mutex */
+    HANDLE hMutex = CreateMutexA(NULL, FALSE, "VncHelperSingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (g_console) {
+            fprintf(stderr, "VNC Helper is already running. Exiting.\n");
+        } else {
+            MessageBoxA(NULL, "VNC Helper is already running.",
+                        "VNC Helper", MB_OK | MB_ICONINFORMATION);
+        }
+        if (hMutex) CloseHandle(hMutex);
+        return 0;
+    }
+
     /* Initialize critical section for client tracking */
     InitializeCriticalSection(&g_cs);
 
