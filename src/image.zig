@@ -42,8 +42,30 @@ fn stbWriteCallback(context: ?*anyopaque, data: ?*anyopaque, size: c_int) callco
     ctx.appendData(ptr[0..len]);
 }
 
-/// Draw a yellow circle marker with crosshair on RGB888 pixel data.
-/// Pure pixel math — no external library, no Windows interaction.
+/// Test if pixel (px, py) is on the marker ring or crosshair
+fn isMarkerPixel(dx: i32, dy: i32, r: i32, s: i32) bool {
+    const dist_sq = dx * dx + dy * dy;
+    const inner = (r - s) * (r - s);
+    const outer = (r + s) * (r + s);
+    const on_ring = dist_sq >= inner and dist_sq <= outer;
+    const on_cross = (@abs(dx) <= 1 and @abs(dy) <= r) or
+        (@abs(dy) <= 1 and @abs(dx) <= r);
+    return on_ring or on_cross;
+}
+
+/// Set a pixel in RGB888 buffer
+fn setPixel(rgb: []u8, w: i32, h: i32, px: i32, py: i32, r: u8, g: u8, b: u8) void {
+    if (px < 0 or py < 0 or px >= w or py >= h) return;
+    const idx: usize = (@as(usize, @intCast(py)) * @as(usize, @intCast(w)) + @as(usize, @intCast(px))) * 3;
+    if (idx + 2 < rgb.len) {
+        rgb[idx] = r;
+        rgb[idx + 1] = g;
+        rgb[idx + 2] = b;
+    }
+}
+
+/// Draw a yellow circle marker with crosshair and black outline on RGB888 pixel data.
+/// Two-pass rendering: black outline (1px expansion) then yellow fill for contrast.
 pub fn drawMarker(rgb: []u8, width: u16, height: u16, cx: u16, cy: u16, radius: u16, stroke: u16) void {
     const r = @as(i32, radius);
     const s = @as(i32, stroke);
@@ -52,35 +74,46 @@ pub fn drawMarker(rgb: []u8, width: u16, height: u16, cx: u16, cy: u16, radius: 
     const mcx = @as(i32, cx);
     const mcy = @as(i32, cy);
 
-    // Bounding box
-    const x0 = @max(mcx - r - s, 0);
-    const y0 = @max(mcy - r - s, 0);
-    const x1 = @min(mcx + r + s, w - 1);
-    const y1 = @min(mcy + r + s, h - 1);
+    const outline: i32 = 2; // outline expansion in pixels
+    const x0 = @max(mcx - r - s - outline, 0);
+    const y0 = @max(mcy - r - s - outline, 0);
+    const x1 = @min(mcx + r + s + outline, w - 1);
+    const y1 = @min(mcy + r + s + outline, h - 1);
 
+    // Pass 1: black outline — draw black where any neighbor is a marker pixel
     var py = y0;
     while (py <= y1) : (py += 1) {
         var px = x0;
         while (px <= x1) : (px += 1) {
             const dx = px - mcx;
             const dy = py - mcy;
-            const dist_sq = dx * dx + dy * dy;
-            const inner = (r - s) * (r - s);
-            const outer = (r + s) * (r + s);
+            if (isMarkerPixel(dx, dy, r, s)) continue; // will be yellow in pass 2
 
-            // Ring: between inner and outer radius
-            const on_ring = dist_sq >= inner and dist_sq <= outer;
-            // Crosshair: thin lines through center (2px wide)
-            const on_cross = (@abs(dx) <= 1 and @abs(dy) <= r) or
-                (@abs(dy) <= 1 and @abs(dx) <= r);
-
-            if (on_ring or on_cross) {
-                const idx: usize = (@as(usize, @intCast(py)) * @as(usize, @intCast(w)) + @as(usize, @intCast(px))) * 3;
-                if (idx + 2 < rgb.len) {
-                    rgb[idx] = 255; // R
-                    rgb[idx + 1] = 255; // G
-                    rgb[idx + 2] = 0; // B — yellow
+            // Check if any neighbor within outline distance is a marker pixel
+            var is_outline = false;
+            var oy: i32 = -outline;
+            while (oy <= outline and !is_outline) : (oy += 1) {
+                var ox: i32 = -outline;
+                while (ox <= outline and !is_outline) : (ox += 1) {
+                    if (isMarkerPixel(dx + ox, dy + oy, r, s)) {
+                        is_outline = true;
+                    }
                 }
+            }
+            if (is_outline) {
+                setPixel(rgb, w, h, px, py, 0, 0, 0);
+            }
+        }
+    }
+
+    // Pass 2: yellow marker fill
+    py = @max(mcx - r - s, 0);
+    py = @max(mcy - r - s, 0);
+    while (py <= @min(mcy + r + s, h - 1)) : (py += 1) {
+        var px = @max(mcx - r - s, 0);
+        while (px <= @min(mcx + r + s, w - 1)) : (px += 1) {
+            if (isMarkerPixel(px - mcx, py - mcy, r, s)) {
+                setPixel(rgb, w, h, px, py, 255, 255, 0);
             }
         }
     }

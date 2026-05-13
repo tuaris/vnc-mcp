@@ -892,6 +892,93 @@ static void cmd_set_active_window(SOCKET sock, const char *json)
 }
 
 /* ================================================================
+ * Command: manage_window
+ *
+ * Minimize, maximize, restore, or close a window found by title,
+ * class, or PID. Actions: minimize, maximize, restore, close.
+ * ================================================================ */
+
+static void cmd_manage_window(SOCKET sock, const char *json)
+{
+    char title[512] = {0};
+    char classname[256] = {0};
+    char action[32] = {0};
+    int  pid = 0;
+
+    json_get_string(json, "title", title, sizeof(title));
+    json_get_string(json, "class", classname, sizeof(classname));
+    json_get_string(json, "action", action, sizeof(action));
+    json_get_int(json, "pid", &pid);
+
+    if (!action[0]) {
+        send_error(sock, "action is required (minimize, maximize, restore, close)");
+        return;
+    }
+    if (!title[0] && !classname[0] && !pid) {
+        send_error(sock, "Provide at least one of: title, class, pid");
+        return;
+    }
+
+    log_msg("manage_window: action='%s' title='%s' class='%s' pid=%d", action, title, classname, pid);
+
+    FindWinCtx ctx;
+    ctx.title     = title;
+    ctx.classname = classname;
+    ctx.pid       = (DWORD)pid;
+    ctx.found     = NULL;
+
+    EnumWindows(find_window_cb, (LPARAM)&ctx);
+
+    if (!ctx.found) {
+        send_error(sock, "No matching window found");
+        return;
+    }
+
+    BOOL ok = TRUE;
+    if (strcmp(action, "minimize") == 0) {
+        ShowWindow(ctx.found, SW_MINIMIZE);
+    } else if (strcmp(action, "maximize") == 0) {
+        ShowWindow(ctx.found, SW_MAXIMIZE);
+    } else if (strcmp(action, "restore") == 0) {
+        ShowWindow(ctx.found, SW_RESTORE);
+    } else if (strcmp(action, "close") == 0) {
+        ok = PostMessageA(ctx.found, WM_CLOSE, 0, 0);
+    } else {
+        send_error(sock, "Unknown action (use: minimize, maximize, restore, close)");
+        return;
+    }
+
+    if (!ok) {
+        send_error(sock, "Window operation failed");
+        return;
+    }
+
+    /* Report result */
+    char wt[512] = {0}, wc[256] = {0};
+    DWORD wpid = 0;
+    RECT rect = {0};
+    GetWindowTextA(ctx.found, wt, sizeof(wt));
+    GetClassNameA(ctx.found, wc, sizeof(wc));
+    GetWindowRect(ctx.found, &rect);
+    GetWindowThreadProcessId(ctx.found, &wpid);
+
+    char wt_esc[1024], wc_esc[512], act_esc[64];
+    json_escape(wt, wt_esc, sizeof(wt_esc));
+    json_escape(wc, wc_esc, sizeof(wc_esc));
+    json_escape(action, act_esc, sizeof(act_esc));
+
+    char buf[2048];
+    snprintf(buf, sizeof(buf),
+             "{\"status\":\"ok\",\"data\":{\"action\":\"%s\",\"title\":\"%s\",\"class\":\"%s\","
+             "\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"pid\":%lu}}",
+             act_esc, wt_esc, wc_esc,
+             (int)rect.left, (int)rect.top,
+             (int)(rect.right - rect.left), (int)(rect.bottom - rect.top),
+             (unsigned long)wpid);
+    send_line(sock, buf);
+}
+
+/* ================================================================
  * Command: clipboard_get  (Windows API, CF_UNICODETEXT)
  * ================================================================ */
 
@@ -2203,6 +2290,7 @@ static void handle_client(SOCKET sock)
         else if (strcmp(command, "window_list")     == 0) cmd_window_list(sock);
         else if (strcmp(command, "active_window")   == 0) cmd_active_window(sock);
         else if (strcmp(command, "set_active_window") == 0) cmd_set_active_window(sock, request);
+        else if (strcmp(command, "manage_window")   == 0) cmd_manage_window(sock, request);
         else if (strcmp(command, "clipboard_get")   == 0) cmd_clipboard_get(sock);
         else if (strcmp(command, "clipboard_set")   == 0) cmd_clipboard_set(sock, request);
         else if (strcmp(command, "run_command")     == 0) cmd_run_command(sock, request);

@@ -238,6 +238,8 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolActiveWindow(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_set_active_window")) {
         return toolSetActiveWindow(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_manage_window")) {
+        return toolManageWindow(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_helper_clipboard_get")) {
         return toolHelperClipboardGet(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_helper_clipboard_set")) {
@@ -730,6 +732,54 @@ fn toolSetActiveWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !Jso
     defer allocator.free(extra);
 
     const response = callHelper(allocator, arguments, "set_active_window", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolManageWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    const action = getString(args, "action") orelse return error.InvalidArgument;
+
+    var parts = std.ArrayList(u8){};
+    defer parts.deinit(allocator);
+
+    {
+        const escaped = try helper.jsonEscape(allocator, action);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"action\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+
+    if (getString(args, "title")) |t| {
+        try parts.append(allocator, ',');
+        const escaped = try helper.jsonEscape(allocator, t);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"title\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (getString(args, "class")) |c| {
+        try parts.append(allocator, ',');
+        const escaped = try helper.jsonEscape(allocator, c);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"class\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (getInt(args, "pid")) |p| {
+        const chunk = try std.fmt.allocPrint(allocator, ",\"pid\":{d}", .{p});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+
+    const extra = try allocator.dupe(u8, parts.items);
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "manage_window", extra) catch |err| {
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };

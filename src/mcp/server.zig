@@ -214,7 +214,7 @@ pub const McpServer = struct {
         const escaped_instructions = try jsonEscape(self.allocator, instructions);
         defer self.allocator.free(escaped_instructions);
 
-        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.1.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.4.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
@@ -253,15 +253,58 @@ pub const McpServer = struct {
 
         const arguments = obj.get("arguments");
 
-        const result = self.tool_handler(self.allocator, name, arguments) catch |err| {
-            const err_msg = try std.fmt.allocPrint(self.allocator, "Tool error: {}", .{err});
-            defer self.allocator.free(err_msg);
+        // Execute tool with timeout to prevent indefinite IDE hangs (R6).
+        // Spawn tool on a worker thread; main thread polls completion with
+        // a 45-second deadline. If the worker hasn't finished, respond with
+        // an error and detach the thread (it will finish on its own).
+        const timeout_ns: u64 = 45 * std.time.ns_per_s;
+        const ToolCtx = struct {
+            value: ?JsonValue = null,
+            err_msg: ?[]const u8 = null,
+            done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        };
 
-            try self.sendToolError(id, err_msg);
+        const handler = self.tool_handler;
+        const alloc = self.allocator;
+        var tool_ctx = ToolCtx{};
+
+        const thread = std.Thread.spawn(.{}, struct {
+            fn run(ctx: *ToolCtx, h: @TypeOf(handler), a: std.mem.Allocator, n: []const u8, ar: ?JsonValue) void {
+                ctx.value = h(a, n, ar) catch |err| {
+                    ctx.err_msg = std.fmt.allocPrint(a, "Tool error: {}", .{err}) catch "Tool error (unknown)";
+                    ctx.done.store(true, .release);
+                    return;
+                };
+                ctx.done.store(true, .release);
+            }
+        }.run, .{ &tool_ctx, handler, alloc, name, arguments }) catch {
+            try self.sendToolError(id, "Failed to spawn tool thread");
             return;
         };
 
-        try self.sendToolResult(id, result);
+        // Poll for completion with 100ms intervals
+        const deadline = @as(u64, @intCast(std.time.nanoTimestamp())) + timeout_ns;
+        while (!tool_ctx.done.load(.acquire)) {
+            if (@as(u64, @intCast(std.time.nanoTimestamp())) >= deadline) {
+                log.err("tool call '{s}' timed out after 45s", .{name});
+                try self.sendToolError(id, "Tool call timed out after 45 seconds");
+                thread.detach();
+                return;
+            }
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+        }
+        thread.join();
+
+        if (tool_ctx.err_msg) |err_msg| {
+            try self.sendToolError(id, err_msg);
+            return;
+        }
+
+        if (tool_ctx.value) |result| {
+            try self.sendToolResult(id, result);
+        } else {
+            try self.sendToolError(id, "Tool returned no result");
+        }
     }
 
     fn sendToolResult(self: *McpServer, id: ?JsonValue, content: JsonValue) !void {

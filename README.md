@@ -6,14 +6,16 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 
 ## Features
 
-- **25 MCP tools** — screen capture, mouse/keyboard input, clipboard, file transfer, OCR, UI automation, command execution
+- **27 MCP tools** — screen capture, mouse/keyboard input, clipboard, file transfer, OCR, UI automation, window management, command execution
 - **Visual click confirmation** — clicks return a screenshot with a yellow marker ring at the exact click point
+- **Coordinate grid** — `vnc_grid` overlays a labeled grid (A1–P12) and returns center coordinates for every cell
 - **Coordinate verification** — `vnc_probe` places a marker on a screenshot without interacting with the desktop
 - **Resolution metadata** — screenshots include pixel dimensions so AI agents can compute coordinates accurately
 - **DES authentication** — both VNC and helper connections use challenge-response auth (reads password from VNC server registry)
 - **On-screen indicator** — translucent overlay pill shows when an MCP client is connected
 - **Persistent connections** — connection pools for both VNC and helper, with automatic reconnection
 - **NSIS installer** — Windows installer for the helper agent (firewall rule, startup registration, uninstaller)
+- **Tool call timeout** — 45-second safety net prevents IDE hangs if a tool call stalls
 - **Multi-endpoint** — manage multiple remote desktops from a single MCP server instance
 - **CI/CD** — Forgejo Actions builds MCP server, cross-compiles helper, and packages NSIS installer on tag push
 
@@ -23,6 +25,7 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 |------|-------------|
 | `vnc_screenshot` | Capture screen as JPEG with resolution metadata. Optional quality and delay. |
 | `vnc_probe` | Place a yellow marker at coordinates on a screenshot *without* clicking or moving the mouse. |
+| `vnc_grid` | Overlay a labeled coordinate grid (A1–P12) on a screenshot with cell center coordinates. |
 | `vnc_click` | Click at (x,y) with visual confirmation screenshot. Left/right/middle, double-click. |
 | `vnc_drag` | Click-and-drag from (x1,y1) to (x2,y2) with interpolated movement. |
 | `vnc_move_mouse` | Move cursor without clicking. |
@@ -41,6 +44,7 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 | `vnc_window_list` | List all visible windows with titles, positions, sizes, and PIDs. |
 | `vnc_active_window` | Get the focused window's title, class, position, size, and PID. |
 | `vnc_set_active_window` | Activate a window by title substring, class name, or PID. |
+| `vnc_manage_window` | Minimize, maximize, restore, or close a window by title, class, or PID. |
 | `vnc_run_command` | Execute a command via `cmd.exe /c`, return stdout/stderr/exit code. Configurable timeout. |
 | `vnc_screen_info` | Get monitor layout, resolution, and DPI. |
 | `vnc_upload_file` | Transfer a local file to the remote filesystem (max 10MB, base64 over TCP). |
