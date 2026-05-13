@@ -74,6 +74,7 @@ jobs:
           doas mkdir -p "$JPATH/tmp/build"
           doas cp zig-out/bin/vnc-helper.exe "$JPATH/tmp/build/"
           doas cp installer/vnc-helper.nsi "$JPATH/tmp/build/"
+          doas cp helper/vnc-ocr.ps1 helper/vnc-uia.ps1 "$JPATH/tmp/build/"
 
           # VI_VERSION must be numeric X.X.X for VIProductVersion (no pre-release suffix)
           VI_VERSION=$(echo "$VERSION" | sed 's/-.*//')
