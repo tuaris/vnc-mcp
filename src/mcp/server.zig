@@ -196,6 +196,12 @@ pub const McpServer = struct {
         const instructions =
             "VNC remote desktop control server. Use vnc_list_endpoints to see available machines. " ++
             "All tools accept an optional 'endpoint' parameter to target a specific machine.\n\n" ++
+            "CRITICAL — Screenshot Coordinate System:\n" ++
+            "Screenshots are returned at FULL resolution (e.g., 1918x968 pixels — check the 'Resolution: WxH pixels' text in every screenshot response). " ++
+            "However, your IDE displays them SCALED DOWN to fit the chat panel (often ~500px wide). " ++
+            "You MUST use the ACTUAL resolution for all coordinate calculations, NOT the visual size you see. " ++
+            "If the screenshot says 'Resolution: 1918x968 pixels' and a button appears at the visual center, its coordinates are (959, 484), NOT (250, 125). " ++
+            "ALWAYS read the resolution metadata and do the math.\n\n" ++
             "IMPORTANT — Interaction Strategy:\n" ++
             "1. Screenshots may be STALE (up to 500ms behind reality). Never trust a screenshot as the sole basis for click coordinates.\n" ++
             "2. Before clicking, call vnc_active_window or vnc_window_list to get authoritative window positions and verify which window has focus.\n" ++
@@ -204,17 +210,22 @@ pub const McpServer = struct {
             "5. vnc_clipboard_get reads the remote clipboard (updated whenever text is copied on the remote machine).\n" ++
             "6. For window switching, use Alt+Tab or verify the target window is foreground via vnc_active_window — do NOT click taskbar buttons by guessing coordinates.\n" ++
             "7. The helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region) provide real-time authoritative state — prefer them over visual guessing.\n" ++
-            "8. NEVER estimate pixel coordinates by visually inspecting screenshots. Screenshots are displayed at a SCALED resolution in your UI — visual estimates WILL be wrong. " ++
-            "ALWAYS compute click coordinates from helper-reported window positions (vnc_window_list, vnc_active_window) plus known UI offsets (e.g., title bar ~32px, menu item ~22px). " ++
+            "8. NEVER estimate pixel coordinates by visually inspecting the scaled screenshot image in your UI. " ++
+            "ALWAYS use one of these methods to determine coordinates: (a) vnc_grid to get labeled cell coordinates, (b) vnc_window_list/vnc_active_window for window positions + known UI offsets, (c) vnc_probe to verify before clicking. " ++
             "Example: to click 'File' menu, get window position from vnc_active_window (x=164, y=362), then compute File menu at (x+15, y+42).\n" ++
             "9. When adjusting coordinates after a miss, change ONLY ONE axis at a time. If y was wrong, keep x the same. Changing both x and y simultaneously makes it impossible to isolate which adjustment helped.\n" ++
             "10. Use vnc_probe to verify coordinates BEFORE clicking. After probing, HONESTLY evaluate the returned screenshot — if the marker is NOT on the intended target, do NOT proceed with the click. Adjust and re-probe until the marker visually confirms the target. The probe exists to prevent wasted clicks; ignoring its result defeats its purpose.\n" ++
-            "11. Use vnc_grid for efficient coordinate discovery. It overlays a labeled grid (A1-P12) on the screenshot and returns the center coordinates of every cell. Identify which cell contains your target, then click at that cell's coordinates (with optional offset). This replaces multiple probe calls with a single grid call.";
+            "11. Use vnc_grid for efficient coordinate discovery — ESPECIALLY for toolbars, ribbons, and dense UI areas with many small targets. " ++
+            "Call vnc_grid with higher column/row counts (e.g., columns=12, rows=8) for fine-grained targeting. " ++
+            "Identify which cell contains your target, then click at that cell's coordinates. This is FAR more accurate than guessing from a scaled screenshot.\n" ++
+            "12. vnc_ui_click_element is useful but UNRELIABLE for disambiguation — it matches by partial name and may activate the WRONG element. " ++
+            "After using it, ALWAYS verify the result with a screenshot or vnc_active_window. " ++
+            "If the tool returns empty data, you have NO confirmation it worked. Prefer keyboard shortcuts or grid-based clicking for critical interactions.";
 
         const escaped_instructions = try jsonEscape(self.allocator, instructions);
         defer self.allocator.free(escaped_instructions);
 
-        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.4.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.5.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
