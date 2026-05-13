@@ -262,6 +262,20 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolUiElementText(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_ui_click_element")) {
         return toolUiClickElement(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_registry_read")) {
+        return toolRegistryRead(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_registry_write")) {
+        return toolRegistryWrite(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_registry_list")) {
+        return toolRegistryList(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_list_processes")) {
+        return toolListProcesses(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_kill_process")) {
+        return toolKillProcess(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_list_services")) {
+        return toolListServices(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_service_control")) {
+        return toolServiceControl(allocator, arguments);
     } else {
         return textContent(allocator, "Unknown tool");
     }
@@ -1142,6 +1156,167 @@ fn toolUiClickElement(allocator: std.mem.Allocator, arguments: ?JsonValue) !Json
     defer allocator.free(extra);
 
     const response = callHelper(allocator, arguments, "ui_click_element", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolRegistryRead(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const key = getString(args, "key") orelse return error.InvalidArgument;
+
+    const escaped_key = try helper.jsonEscape(allocator, key);
+    defer allocator.free(escaped_key);
+
+    var extra: []u8 = undefined;
+    if (getString(args, "value")) |value_name| {
+        const escaped_val = try helper.jsonEscape(allocator, value_name);
+        defer allocator.free(escaped_val);
+        extra = try std.fmt.allocPrint(allocator, "\"key\":\"{s}\",\"value\":\"{s}\"", .{ escaped_key, escaped_val });
+    } else {
+        extra = try std.fmt.allocPrint(allocator, "\"key\":\"{s}\"", .{escaped_key});
+    }
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "registry_read", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolRegistryWrite(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const key = getString(args, "key") orelse return error.InvalidArgument;
+
+    const escaped_key = try helper.jsonEscape(allocator, key);
+    defer allocator.free(escaped_key);
+
+    var parts = std.ArrayList(u8){};
+    defer parts.deinit(allocator);
+
+    {
+        const chunk = try std.fmt.allocPrint(allocator, "\"key\":\"{s}\"", .{escaped_key});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+
+    if (getString(args, "value")) |value_name| {
+        const escaped = try helper.jsonEscape(allocator, value_name);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, ",\"value\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (getString(args, "type")) |reg_type| {
+        const escaped = try helper.jsonEscape(allocator, reg_type);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, ",\"type\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (getString(args, "data")) |data| {
+        const escaped = try helper.jsonEscape(allocator, data);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, ",\"data\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    } else if (getInt(args, "data")) |data_int| {
+        const chunk = try std.fmt.allocPrint(allocator, ",\"data\":{d}", .{data_int});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+
+    const extra = try allocator.dupe(u8, parts.items);
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "registry_write", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolRegistryList(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const key = getString(args, "key") orelse return error.InvalidArgument;
+
+    const escaped_key = try helper.jsonEscape(allocator, key);
+    defer allocator.free(escaped_key);
+
+    const extra = try std.fmt.allocPrint(allocator, "\"key\":\"{s}\"", .{escaped_key});
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "registry_list", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolListProcesses(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const response = callHelper(allocator, arguments, "process_list", null) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolKillProcess(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    var parts = std.ArrayList(u8){};
+    defer parts.deinit(allocator);
+
+    if (getInt(args, "pid")) |pid| {
+        const chunk = try std.fmt.allocPrint(allocator, "\"pid\":{d}", .{pid});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+    if (getString(args, "name")) |n| {
+        if (parts.items.len > 0) try parts.append(allocator, ',');
+        const escaped = try helper.jsonEscape(allocator, n);
+        defer allocator.free(escaped);
+        const chunk = try std.fmt.allocPrint(allocator, "\"name\":\"{s}\"", .{escaped});
+        defer allocator.free(chunk);
+        try parts.appendSlice(allocator, chunk);
+    }
+
+    if (parts.items.len == 0) return textContent(allocator, "Provide 'pid' or 'name' to kill");
+
+    const extra = try allocator.dupe(u8, parts.items);
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "process_kill", extra) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolListServices(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const response = callHelper(allocator, arguments, "service_list", null) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+fn toolServiceControl(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const svc_name = getString(args, "name") orelse return error.InvalidArgument;
+    const action = getString(args, "action") orelse return error.InvalidArgument;
+
+    const escaped_name = try helper.jsonEscape(allocator, svc_name);
+    defer allocator.free(escaped_name);
+    const escaped_action = try helper.jsonEscape(allocator, action);
+    defer allocator.free(escaped_action);
+
+    const extra = try std.fmt.allocPrint(allocator, "\"name\":\"{s}\",\"action\":\"{s}\"", .{ escaped_name, escaped_action });
+    defer allocator.free(extra);
+
+    const response = callHelper(allocator, arguments, "service_control", extra) catch |err| {
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };

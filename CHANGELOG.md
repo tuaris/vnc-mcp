@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0] - 2026-05-13
+
+### Added
+- **`vnc_registry_read` tool** — read any Windows registry value (REG_SZ, REG_DWORD, REG_QWORD, REG_BINARY, REG_MULTI_SZ, REG_EXPAND_SZ). Returns typed data with automatic formatting.
+- **`vnc_registry_write` tool** — write registry values (REG_SZ, REG_DWORD, REG_EXPAND_SZ). Creates keys if they don't exist.
+- **`vnc_registry_list` tool** — enumerate subkeys and values under a registry key with types and sizes.
+- **`vnc_list_processes` tool** — list all running processes with name, PID, parent PID, and thread count via `CreateToolhelp32Snapshot`.
+- **`vnc_kill_process` tool** — terminate a process by PID or executable name (case-insensitive name matching).
+- **`vnc_list_services` tool** — list all Windows services with service name, display name, and current status.
+- **`vnc_service_control` tool** — start, stop, or restart a Windows service by name. Handles already-running/already-stopped states gracefully.
+
+### Changed
+- **34 total MCP tools** (was 27).
+
 ## [0.4.0] - 2026-05-13
 
 ### Added
