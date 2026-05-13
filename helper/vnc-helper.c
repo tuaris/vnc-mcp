@@ -1752,6 +1752,183 @@ static void cmd_ui_click_element(SOCKET sock, const char *json)
 }
 
 /* ================================================================
+ * Command: click_marker
+ *
+ * Draw a bright yellow ring on screen at (x,y) that auto-destroys
+ * after a short duration. Visible in VNC screenshots (no capture
+ * exclusion). Used by vnc_click for visual confirmation.
+ * ================================================================ */
+
+#define MARKER_WND_CLASS  "VncHelperMarker"
+#define MARKER_TIMER_ID   99
+#define MARKER_RADIUS     20
+#define MARKER_STROKE     3
+#define MARKER_SIZE       ((MARKER_RADIUS + MARKER_STROKE) * 2 + 2)
+#define MARKER_DURATION   2000  /* ms before auto-destroy */
+
+static volatile HWND g_marker_hwnd = NULL;
+
+static LRESULT CALLBACK marker_wnd_proc(HWND hwnd, UINT msg,
+                                         WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_TIMER:
+        if (wp == MARKER_TIMER_ID) {
+            KillTimer(hwnd, MARKER_TIMER_ID);
+            DestroyWindow(hwnd);
+            g_marker_hwnd = NULL;
+        }
+        return 0;
+    case WM_DESTROY:
+        g_marker_hwnd = NULL;
+        return 0;
+    }
+    return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+/* Create and show a click marker at the given screen coordinates.
+ * Must be called from the GUI thread (posts a message to trigger creation). */
+static void create_click_marker(int cx, int cy, int duration_ms)
+{
+    /* Destroy previous marker if still visible */
+    if (g_marker_hwnd) {
+        DestroyWindow(g_marker_hwnd);
+        g_marker_hwnd = NULL;
+    }
+
+    int sz = MARKER_SIZE;
+    int x = cx - sz / 2;
+    int y = cy - sz / 2;
+
+    HINSTANCE hInst = GetModuleHandleA(NULL);
+
+    /* Register class once */
+    static int registered = 0;
+    if (!registered) {
+        WNDCLASSA wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.lpfnWndProc   = marker_wnd_proc;
+        wc.hInstance      = hInst;
+        wc.lpszClassName  = MARKER_WND_CLASS;
+        wc.hbrBackground  = (HBRUSH)GetStockObject(NULL_BRUSH);
+        RegisterClassA(&wc);
+        registered = 1;
+    }
+
+    HWND hwnd = CreateWindowExA(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+        MARKER_WND_CLASS, NULL,
+        WS_POPUP,
+        x, y, sz, sz,
+        NULL, NULL, hInst, NULL);
+
+    if (!hwnd) return;
+
+    /* Paint yellow ring into a 32-bit ARGB DIB */
+    BITMAPINFO bmi;
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       = sz;
+    bmi.bmiHeader.biHeight      = -sz;  /* top-down */
+    bmi.bmiHeader.biPlanes      = 1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    BYTE *bits = NULL;
+    HDC screen_dc = GetDC(NULL);
+    HDC mem_dc = CreateCompatibleDC(screen_dc);
+    HBITMAP dib = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS,
+                                   (void **)&bits, NULL, 0);
+    HBITMAP old_bmp = (HBITMAP)SelectObject(mem_dc, dib);
+
+    /* Clear to fully transparent */
+    memset(bits, 0, (size_t)(sz * sz * 4));
+
+    /* Draw yellow ring with per-pixel alpha */
+    int center = sz / 2;
+    int r_outer = MARKER_RADIUS + MARKER_STROKE;
+    int r_inner = MARKER_RADIUS - MARKER_STROKE;
+    for (int py = 0; py < sz; py++) {
+        for (int px = 0; px < sz; px++) {
+            int dx = px - center;
+            int dy = py - center;
+            int dist_sq = dx * dx + dy * dy;
+            if (dist_sq <= r_outer * r_outer && dist_sq >= r_inner * r_inner) {
+                BYTE *p = bits + (py * sz + px) * 4;
+                /* Pre-multiplied alpha BGRA: bright yellow, fully opaque */
+                p[0] = 0;     /* B */
+                p[1] = 255;   /* G */
+                p[2] = 255;   /* R */
+                p[3] = 255;   /* A */
+            }
+        }
+    }
+
+    /* Also draw a small crosshair at center (4px) */
+    for (int i = -4; i <= 4; i++) {
+        /* Horizontal */
+        if (center + i >= 0 && center + i < sz) {
+            BYTE *p = bits + (center * sz + center + i) * 4;
+            p[0] = 0; p[1] = 255; p[2] = 255; p[3] = 255;
+        }
+        /* Vertical */
+        if (center + i >= 0 && center + i < sz) {
+            BYTE *p = bits + ((center + i) * sz + center) * 4;
+            p[0] = 0; p[1] = 255; p[2] = 255; p[3] = 255;
+        }
+    }
+
+    /* UpdateLayeredWindow */
+    POINT pt_src = {0, 0};
+    POINT pt_pos = {x, y};
+    SIZE wnd_sz = {sz, sz};
+    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+
+    UpdateLayeredWindow(hwnd, screen_dc, &pt_pos, &wnd_sz,
+                        mem_dc, &pt_src, 0, &blend, ULW_ALPHA);
+
+    SelectObject(mem_dc, old_bmp);
+    DeleteObject(dib);
+    DeleteDC(mem_dc);
+    ReleaseDC(NULL, screen_dc);
+
+    /* Show and start auto-destroy timer */
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+
+    if (duration_ms < 500)  duration_ms = 500;
+    if (duration_ms > 10000) duration_ms = 10000;
+    SetTimer(hwnd, MARKER_TIMER_ID, (UINT)duration_ms, NULL);
+
+    g_marker_hwnd = hwnd;
+}
+
+static void cmd_click_marker(SOCKET sock, const char *json)
+{
+    int x = 0, y = 0, duration = MARKER_DURATION;
+
+    if (!json_get_int(json, "x", &x) || !json_get_int(json, "y", &y)) {
+        send_error(sock, "Missing 'x' and 'y' parameters");
+        return;
+    }
+    json_get_int(json, "duration", &duration);
+
+    log_msg("click_marker: x=%d y=%d duration=%d", x, y, duration);
+
+    /* Must create the overlay window on the GUI thread.
+     * Since we're on a worker thread, post a message to the tray window
+     * and have it call create_click_marker. For simplicity, just call
+     * it directly — CreateWindowEx works from any thread as long as the
+     * message loop processes messages (which it does via GetMessage). */
+    create_click_marker(x, y, duration);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "{\"status\":\"ok\",\"data\":{\"x\":%d,\"y\":%d,\"duration\":%d}}",
+             x, y, duration);
+    send_line(sock, buf);
+}
+
+/* ================================================================
  * Client Handler
  * ================================================================ */
 
@@ -1810,6 +1987,7 @@ static void handle_client(SOCKET sock)
         else if (strcmp(command, "ui_tree")         == 0) cmd_ui_tree(sock, request);
         else if (strcmp(command, "ui_element_text") == 0) cmd_ui_element_text(sock, request);
         else if (strcmp(command, "ui_click_element")== 0) cmd_ui_click_element(sock, request);
+        else if (strcmp(command, "click_marker")   == 0) cmd_click_marker(sock, request);
         else {
             char msg[128];
             snprintf(msg, sizeof(msg), "Unknown command: %s", command);

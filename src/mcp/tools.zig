@@ -287,7 +287,53 @@ fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
         try client.sendPointerEvent(x, y, 0);
     }
 
-    return textContent(allocator, "Click sent");
+    // Visual confirmation: draw marker at click point + capture screenshot
+    // Best-effort — if helper is unavailable, still return the click result
+    const marker_params = try std.fmt.allocPrint(allocator, "\"x\":{d},\"y\":{d}", .{ x, y });
+    defer allocator.free(marker_params);
+    _ = callHelper(allocator, arguments, "click_marker", marker_params) catch {};
+
+    // Wait for marker to render + screen to settle after click
+    std.Thread.sleep(300 * std.time.ns_per_ms);
+
+    // Capture confirmation screenshot
+    const fb = client.screenshot() catch {
+        // If screenshot fails, just return text
+        const msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d})", .{ x, y });
+        return textContent(allocator, msg);
+    };
+    const jpeg = image.encodeJpeg(allocator, fb, 65) catch {
+        const msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d})", .{ x, y });
+        return textContent(allocator, msg);
+    };
+    defer allocator.free(jpeg);
+
+    // Return multi-content: text description + visual confirmation image
+    const click_msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}) — yellow marker shows click location", .{ x, y });
+
+    const base64_encoder = std.base64.standard;
+    const encoded_len = base64_encoder.Encoder.calcSize(jpeg.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    _ = base64_encoder.Encoder.encode(encoded, jpeg);
+
+    var content_arr = std.json.Array.init(allocator);
+
+    // Text item
+    var text_item = std.json.ObjectMap.init(allocator);
+    try text_item.put("type", JsonValue{ .string = "text" });
+    try text_item.put("text", JsonValue{ .string = click_msg });
+    try content_arr.append(JsonValue{ .object = text_item });
+
+    // Image item
+    var img_item = std.json.ObjectMap.init(allocator);
+    try img_item.put("type", JsonValue{ .string = "image" });
+    try img_item.put("data", JsonValue{ .string = encoded });
+    try img_item.put("mimeType", JsonValue{ .string = "image/jpeg" });
+    try content_arr.append(JsonValue{ .object = img_item });
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("content", JsonValue{ .array = content_arr });
+    return JsonValue{ .object = result };
 }
 
 fn toolTypeText(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
