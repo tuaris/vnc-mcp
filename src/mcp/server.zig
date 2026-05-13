@@ -203,7 +203,10 @@ pub const McpServer = struct {
             "4. Use vnc_ocr_region to verify text content at specific coordinates before acting on assumptions from screenshots.\n" ++
             "5. vnc_clipboard_get reads the remote clipboard (updated whenever text is copied on the remote machine).\n" ++
             "6. For window switching, use Alt+Tab or verify the target window is foreground via vnc_active_window — do NOT click taskbar buttons by guessing coordinates.\n" ++
-            "7. The helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region) provide real-time authoritative state — prefer them over visual guessing.";
+            "7. The helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region) provide real-time authoritative state — prefer them over visual guessing.\n" ++
+            "8. NEVER estimate pixel coordinates by visually inspecting screenshots. Screenshots are displayed at a SCALED resolution in your UI — visual estimates WILL be wrong. " ++
+            "ALWAYS compute click coordinates from helper-reported window positions (vnc_window_list, vnc_active_window) plus known UI offsets (e.g., title bar ~32px, menu item ~22px). " ++
+            "Example: to click 'File' menu, get window position from vnc_active_window (x=164, y=362), then compute File menu at (x+15, y+42).";
 
         const escaped_instructions = try jsonEscape(self.allocator, instructions);
         defer self.allocator.free(escaped_instructions);
