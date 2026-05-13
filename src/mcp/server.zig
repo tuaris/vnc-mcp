@@ -206,7 +206,9 @@ pub const McpServer = struct {
             "7. The helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region) provide real-time authoritative state — prefer them over visual guessing.\n" ++
             "8. NEVER estimate pixel coordinates by visually inspecting screenshots. Screenshots are displayed at a SCALED resolution in your UI — visual estimates WILL be wrong. " ++
             "ALWAYS compute click coordinates from helper-reported window positions (vnc_window_list, vnc_active_window) plus known UI offsets (e.g., title bar ~32px, menu item ~22px). " ++
-            "Example: to click 'File' menu, get window position from vnc_active_window (x=164, y=362), then compute File menu at (x+15, y+42).";
+            "Example: to click 'File' menu, get window position from vnc_active_window (x=164, y=362), then compute File menu at (x+15, y+42).\n" ++
+            "9. When adjusting coordinates after a miss, change ONLY ONE axis at a time. If y was wrong, keep x the same. Changing both x and y simultaneously makes it impossible to isolate which adjustment helped.\n" ++
+            "10. Use vnc_probe to verify coordinates BEFORE clicking. After probing, HONESTLY evaluate the returned screenshot — if the marker is NOT on the intended target, do NOT proceed with the click. Adjust and re-probe until the marker visually confirms the target. The probe exists to prevent wasted clicks; ignoring its result defeats its purpose.";
 
         const escaped_instructions = try jsonEscape(self.allocator, instructions);
         defer self.allocator.free(escaped_instructions);
