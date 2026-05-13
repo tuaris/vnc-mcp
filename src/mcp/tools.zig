@@ -162,6 +162,32 @@ fn textContent(allocator: std.mem.Allocator, text: []const u8) !JsonValue {
     return JsonValue{ .object = result };
 }
 
+fn imageContentWithMeta(allocator: std.mem.Allocator, jpeg_data: []const u8, meta_text: []const u8) !JsonValue {
+    const base64_encoder = std.base64.standard;
+    const encoded_len = base64_encoder.Encoder.calcSize(jpeg_data.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    _ = base64_encoder.Encoder.encode(encoded, jpeg_data);
+
+    var content_arr = std.json.Array.init(allocator);
+
+    // Text metadata (resolution, etc.)
+    var text_item = std.json.ObjectMap.init(allocator);
+    try text_item.put("type", JsonValue{ .string = "text" });
+    try text_item.put("text", JsonValue{ .string = meta_text });
+    try content_arr.append(JsonValue{ .object = text_item });
+
+    // Image data
+    var img_item = std.json.ObjectMap.init(allocator);
+    try img_item.put("type", JsonValue{ .string = "image" });
+    try img_item.put("data", JsonValue{ .string = encoded });
+    try img_item.put("mimeType", JsonValue{ .string = "image/jpeg" });
+    try content_arr.append(JsonValue{ .object = img_item });
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("content", JsonValue{ .array = content_arr });
+    return JsonValue{ .object = result };
+}
+
 fn imageContent(allocator: std.mem.Allocator, jpeg_data: []const u8) !JsonValue {
     const base64_encoder = std.base64.standard;
     const encoded_len = base64_encoder.Encoder.calcSize(jpeg_data.len);
@@ -260,7 +286,9 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
     const jpeg = try image.encodeJpeg(allocator, fb, quality);
     defer allocator.free(jpeg);
 
-    return imageContent(allocator, jpeg);
+    // Include resolution metadata so AI agents can compute coordinates
+    const meta = try std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ fb.width, fb.height });
+    return imageContentWithMeta(allocator, jpeg, meta);
 }
 
 fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
