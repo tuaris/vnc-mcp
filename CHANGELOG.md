@@ -13,6 +13,7 @@
 
 ### Changed
 - **34 total MCP tools** (was 27).
+- **Agent instructions rewritten** — clearer coordinate scaling guidance (CRITICAL section), grid/probe promoted as primary targeting method, `ui_click_element` reliability warning added, stale screenshot warning removed (fixed by kqueue P3). Condensed from 12 rules to 10, reduced from ~870 to ~590 tokens.
 
 ## [0.4.0] - 2026-05-13
 
