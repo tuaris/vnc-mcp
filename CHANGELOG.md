@@ -13,7 +13,13 @@
 
 ### Changed
 - **34 total MCP tools** (was 27).
+- **Native UI Automation (#10)** — rewrote all 3 UIA tools (`vnc_ui_tree`, `vnc_ui_element_text`, `vnc_ui_click_element`) in native C using COM `IUIAutomation` interfaces. Eliminates 1–2s PowerShell startup latency. Fixes `$Pid` variable collision crash, empty text return, and non-working menu clicks. `vnc-uia.ps1` is no longer required at runtime.
 - **Agent instructions rewritten** — clearer coordinate scaling guidance (CRITICAL section), grid/probe promoted as primary targeting method, `ui_click_element` reliability warning added, stale screenshot warning removed (fixed by kqueue P3). Condensed from 12 rules to 10, reduced from ~870 to ~590 tokens.
+
+### Fixed
+- **`vnc_ui_tree` crash** — PowerShell's read-only `$Pid` variable collided with the script parameter. Now uses native COM, no variable conflicts.
+- **`vnc_ui_element_text` empty data** — Win32 Edit controls return empty BSTR from ValuePattern. Now falls through to TextPattern, then Name property.
+- **`vnc_ui_click_element` no effect** — InvokePattern now fires correctly via direct COM calls. Menus, buttons, checkboxes, dropdowns all work.
 
 ## [0.4.0] - 2026-05-13
 
