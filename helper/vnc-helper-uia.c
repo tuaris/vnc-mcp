@@ -479,7 +479,7 @@ void cmd_ui_element_text(SOCKET sock, const char *json)
             if (val) {
                 bstr_to_utf8(val, text_utf8, sizeof(text_utf8));
                 SysFreeString(val);
-                got_text = 1;
+                if (text_utf8[0]) got_text = 1;
             }
             IUIAutomationValuePattern_Release(vp);
         }
@@ -502,7 +502,7 @@ void cmd_ui_element_text(SOCKET sock, const char *json)
                     if (val) {
                         bstr_to_utf8(val, text_utf8, sizeof(text_utf8));
                         SysFreeString(val);
-                        got_text = 1;
+                        if (text_utf8[0]) got_text = 1;
                     }
                     IUIAutomationTextRange_Release(range);
                 }
