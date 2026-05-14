@@ -992,3 +992,76 @@ void cmd_click_marker(SOCKET sock, const char *json)
              x, y, duration);
     send_line(sock, buf);
 }
+
+/* ================================================================
+ * Screenshot (via native DLL — DXGI Desktop Duplication)
+ * ================================================================ */
+
+#define SCREENSHOT_MAX (4 * 1024 * 1024)  /* 4 MB JPEG buffer */
+
+void cmd_screenshot(SOCKET sock, const char *json)
+{
+    int x = 0, y = 0, w = 0, h = 0, quality = 75;
+
+    if (!g_native.screenshot) {
+        send_error(sock, "Native DLL not loaded — screenshot unavailable");
+        return;
+    }
+
+    json_get_int(json, "x", &x);
+    json_get_int(json, "y", &y);
+    json_get_int(json, "w", &w);
+    json_get_int(json, "h", &h);
+    json_get_int(json, "quality", &quality);
+
+    log_msg("screenshot: x=%d y=%d w=%d h=%d q=%d", x, y, w, h, quality);
+
+    unsigned char *jpeg_buf = (unsigned char *)malloc(SCREENSHOT_MAX);
+    if (!jpeg_buf) {
+        send_error(sock, "Failed to allocate JPEG buffer");
+        return;
+    }
+
+    int jpeg_len = 0;
+    int rc = g_native.screenshot(x, y, w, h, jpeg_buf, SCREENSHOT_MAX,
+                                 &jpeg_len, quality);
+
+    if (rc != 0) {
+        free(jpeg_buf);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Screenshot capture failed (error %d)", rc);
+        send_error(sock, msg);
+        return;
+    }
+
+    /* Base64 encode the JPEG */
+    int b64_len = 0;
+    char *b64 = b64_encode(jpeg_buf, jpeg_len, &b64_len);
+    free(jpeg_buf);
+
+    if (!b64) {
+        send_error(sock, "Failed to allocate base64 buffer");
+        return;
+    }
+
+    /* Build response — may be large, allocate dynamically */
+    int resp_len = b64_len + 256;
+    char *resp = (char *)malloc(resp_len);
+    if (!resp) {
+        free(b64);
+        send_error(sock, "Failed to allocate response buffer");
+        return;
+    }
+
+    /* We need actual dimensions — if w/h were 0, DLL used full screen.
+     * We don't get the actual dims back from the DLL, so report what was
+     * requested (0 = full screen, caller knows their screen size). */
+    snprintf(resp, resp_len,
+             "{\"status\":\"ok\",\"data\":{\"width\":%d,\"height\":%d,"
+             "\"jpeg_bytes\":%d,\"content\":\"%s\"}}",
+             w, h, jpeg_len, b64);
+
+    send_line(sock, resp);
+    free(resp);
+    free(b64);
+}

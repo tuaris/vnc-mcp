@@ -121,6 +121,8 @@ void cmd_file_upload(SOCKET sock, const char *json);
 void cmd_file_download(SOCKET sock, const char *json);
 void cmd_click_marker(SOCKET sock, const char *json);
 
+void cmd_screenshot(SOCKET sock, const char *json);
+
 /* Click marker creation (must be called from GUI thread) */
 void create_click_marker(int cx, int cy, int duration_ms);
 

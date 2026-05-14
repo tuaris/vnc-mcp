@@ -80,11 +80,16 @@ pub fn build(b: *std.Build) void {
     const build_native_dll = b.addSystemCommand(&.{
         "zig",       "cc",
         "helper/native/winmcp-native.c",
+        "helper/native/stb_impl.c",
         "-target",   "x86_64-windows-gnu",
         "-Ihelper/native",
         "-O2",
         "-shared",
+        "-fno-sanitize=undefined",
         "-o",        "zig-out/bin/winmcp-native.dll",
+        "-ld3d11",
+        "-ldxgi",
+        "-lole32",
     });
     build_native_dll.step.dependOn(b.getInstallStep());
     helper_step.dependOn(&build_native_dll.step);

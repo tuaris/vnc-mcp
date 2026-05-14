@@ -294,6 +294,7 @@ static void handle_client(SOCKET sock)
         else if (strcmp(command, "process_kill")  == 0) cmd_process_kill(sock, request);
         else if (strcmp(command, "service_list")  == 0) cmd_service_list(sock);
         else if (strcmp(command, "service_control")== 0) cmd_service_control(sock, request);
+        else if (strcmp(command, "screenshot")    == 0) cmd_screenshot(sock, request);
         else {
             char msg[128];
             snprintf(msg, sizeof(msg), "Unknown command: %s", command);
