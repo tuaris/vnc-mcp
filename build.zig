@@ -70,6 +70,8 @@ pub fn build(b: *std.Build) void {
         "-luser32",
         "-lgdi32",
         "-ladvapi32",
+        "-lole32",
+        "-loleaut32",
     });
     build_helper.step.dependOn(&compile_rc.step);
     helper_step.dependOn(&build_helper.step);
