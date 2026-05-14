@@ -23,5 +23,5 @@ jobs:
       - name: Verify binaries
         run: |
           file zig-out/bin/vnc-mcp-server
-          file zig-out/bin/vnc-helper.exe
-          ls -la zig-out/bin/vnc-mcp-server zig-out/bin/vnc-helper.exe
+          file zig-out/bin/winmcp.exe
+          ls -la zig-out/bin/vnc-mcp-server zig-out/bin/winmcp.exe

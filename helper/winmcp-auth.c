@@ -1,5 +1,5 @@
 /*
- * vnc-helper-auth.c — VNC DES Authentication (RFC 6143 Section 7.2.2)
+ * winmcp-auth.c — VNC DES Authentication (RFC 6143 Section 7.2.2)
  *
  * DES-ECB implementation using pre-computed SP tables that merge
  * S-box substitution + P permutation into single lookups.
@@ -10,7 +10,7 @@
  * BSD 2-Clause License
  */
 
-#include "vnc-helper.h"
+#include "winmcp.h"
 
 static const unsigned long d3des_SP1[64] = {
     0x01010400UL,0x00000000UL,0x00010000UL,0x01010404UL,0x01010004UL,0x00010404UL,0x00000004UL,0x00010000UL,

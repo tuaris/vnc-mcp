@@ -6,7 +6,7 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 
 ## Features
 
-- **27 MCP tools** — screen capture, mouse/keyboard input, clipboard, file transfer, OCR, UI automation, window management, command execution
+- **34 MCP tools** — screen capture, mouse/keyboard input, clipboard, file transfer, UI automation, window management, process/service management, registry, command execution
 - **Visual click confirmation** — clicks return a screenshot with a yellow marker ring at the exact click point
 - **Coordinate grid** — `vnc_grid` overlays a labeled grid (A1–P12) and returns center coordinates for every cell
 - **Coordinate verification** — `vnc_probe` places a marker on a screenshot without interacting with the desktop
@@ -36,7 +36,7 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 | `vnc_paste_text` | Set clipboard + Ctrl+V — reliable text entry for URLs and special characters. |
 | `vnc_list_endpoints` | List registered VNC endpoints with connection status. |
 
-### Helper Tools (require vnc-helper.exe on target)
+### Helper Tools (require WinMCP agent on target)
 
 | Tool | Description |
 |------|-------------|
@@ -51,10 +51,17 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 | `vnc_download_file` | Retrieve a file from the remote filesystem to local disk (max 10MB). |
 | `vnc_helper_clipboard_get` | Read Windows clipboard via Win32 API (full Unicode, CF_UNICODETEXT). |
 | `vnc_helper_clipboard_set` | Set Windows clipboard via Win32 API (full Unicode). Use with `vnc_key_press` Ctrl+V to paste. |
-| `vnc_ocr_region` | OCR a screen region using Windows.Media.Ocr. Returns recognized text. Multi-language. |
+| `vnc_ocr_region` | OCR a screen region. Currently stubbed — native DLL pending (#14). |
 | `vnc_ui_tree` | Get the accessibility tree of the foreground window (or by PID). Configurable depth. |
 | `vnc_ui_element_text` | Read text/value from a UI element by name or automation ID. |
 | `vnc_ui_click_element` | Invoke the default action on a UI element (click button, toggle checkbox, etc.). |
+| `vnc_registry_read` | Read a Windows registry value (REG_SZ, REG_DWORD, REG_QWORD, REG_BINARY, etc.). |
+| `vnc_registry_write` | Write a registry value. Creates keys if needed. |
+| `vnc_registry_list` | Enumerate subkeys and values under a registry key. |
+| `vnc_list_processes` | List running processes with name, PID, parent PID, thread count. |
+| `vnc_kill_process` | Terminate a process by PID or executable name. |
+| `vnc_list_services` | List all Windows services with status. |
+| `vnc_service_control` | Start, stop, or restart a Windows service. |
 
 ## Architecture
 
@@ -68,16 +75,14 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 │  │                       │  │     │  └───────────────────────┘  │
 │  │  Connection pools:    │  │     │                             │
 │  │  • VNC (per endpoint) │  │ TCP │  ┌───────────────────────┐  │
-│  │  • Helper (per endpt) │──┼─────┼──│  vnc-helper.exe        │  │
+│  │  • Helper (per endpt) │──┼─────┼──│  winmcp.exe            │  │
 │  └───────────────────────┘  │     │  │  (system tray, Win32)  │  │
 │                             │     │  │  port 9800 (default)   │  │
-│  AI IDE ◄── MCP stdio ──►  │     │  │  + vnc-ocr.ps1         │  │
-│                             │     │  │  + vnc-uia.ps1         │  │
-└─────────────────────────────┘     │  └───────────────────────┘  │
-                                    └─────────────────────────────┘
+│  AI IDE ◄── MCP stdio ──►  │     │  └───────────────────────┘  │
+└─────────────────────────────┘     └─────────────────────────────┘
 ```
 
-The helper agent delegates OCR to `vnc-ocr.ps1` (Windows.Media.Ocr) and UI Automation to `vnc-uia.ps1` (System.Windows.Automation) — both ship with the installer.
+UI Automation uses native COM (`IUIAutomation`) for <100ms latency. OCR is currently stubbed pending a native MSVC DLL (#14).
 
 ## Building
 
@@ -93,7 +98,7 @@ zig build helper
 
 Outputs:
 - `zig-out/bin/vnc-mcp-server` — MCP server binary (~4MB)
-- `zig-out/bin/vnc-helper.exe` — Windows helper PE32+ GUI app
+- `zig-out/bin/winmcp.exe` — WinMCP agent PE32+ GUI app
 
 The NSIS installer is built by CI (requires a Linux environment with `makensis`). See `.forgejo/workflows/release.yml`.
 
@@ -138,26 +143,26 @@ Add to your MCP client config (Windsurf, VS Code, Claude Desktop, etc.):
 }
 ```
 
-### Windows Helper
+### WinMCP Agent
 
-**Recommended:** Use the NSIS installer (`vnc-helper-<version>-setup.exe` from the [releases page](https://pacyworld.dev/pacyworld/vnc-mcp-server/releases)). It handles installation, firewall rules, startup registration, and includes the OCR and UI Automation scripts.
+**Recommended:** Use the NSIS installer (`winmcp-<version>-setup.exe` from the [releases page](https://pacyworld.dev/pacyworld/vnc-mcp-server/releases)). It handles installation, firewall rules, and startup registration.
 
 **Manual usage:**
 
 ```
-vnc-helper.exe                  Run as tray app (default port 9800)
-vnc-helper.exe -console         Run with console window for debugging
-vnc-helper.exe -port 9800       Set listen port
-vnc-helper.exe -password-file P Read auth password from file (instead of registry)
-vnc-helper.exe install          Add to Windows startup (HKCU\...\Run)
-vnc-helper.exe uninstall        Remove from Windows startup
+winmcp.exe                  Run as tray app (default port 9800)
+winmcp.exe -console         Run with console window for debugging
+winmcp.exe -port 9800       Set listen port
+winmcp.exe -password-file P Read auth password from file (instead of registry)
+winmcp.exe install          Add to Windows startup (HKCU\...\Run)
+winmcp.exe uninstall        Remove from Windows startup
 ```
 
-**Authentication:** The helper uses VNC DES challenge-response on every TCP connection. It reads the VNC password from the Windows registry (TightVNC, RealVNC, TigerVNC, UltraVNC — checked in order) or from a plaintext file via `-password-file`. The MCP server must have the same password configured via `password_file` in endpoints.json.
+**Authentication:** The agent uses VNC DES challenge-response on every TCP connection. It reads the VNC password from the Windows registry (TightVNC, RealVNC, TigerVNC, UltraVNC — checked in order) or from a plaintext file via `-password-file`. The MCP server must have the same password configured via `password_file` in endpoints.json.
 
 **On-screen indicator:** When an MCP client connects, a small translucent overlay pill appears at the top-right corner showing the connection source IP and duration. It's draggable and disappears when disconnected.
 
-**Single-instance:** Only one vnc-helper.exe process runs at a time (enforced via a named mutex). Launching a second instance silently exits.
+**Single-instance:** Only one winmcp.exe process runs at a time (enforced via a named mutex). Launching a second instance silently exits.
 
 ## Security
 
@@ -176,10 +181,9 @@ vnc-helper.exe uninstall        Remove from Windows startup
 - OpenSSL libcrypto (DES for VNC auth)
 - stb_image_write.h (bundled, JPEG encoding)
 
-**Helper agent:**
-- No external dependencies (statically linked Win32 API)
+**WinMCP agent:**
+- No external dependencies (statically linked Win32 API, native COM for UI Automation)
 - Cross-compiled from FreeBSD/Linux with `zig cc`
-- PowerShell 5.1+ (ships with Windows 10/11) for OCR and UI Automation scripts
 
 ## CI/CD
 
@@ -190,8 +194,8 @@ Forgejo Actions workflows on [pacyworld.dev](https://pacyworld.dev/pacyworld/vnc
 
 Release artifacts:
 - `vnc-mcp-server-freebsd-amd64` — MCP server binary
-- `vnc-helper-windows-amd64.exe` — standalone helper binary
-- `vnc-helper-<version>-setup.exe` — NSIS installer (includes OCR/UIA scripts, firewall rule, startup)
+- `winmcp-windows-amd64.exe` — standalone WinMCP agent binary
+- `winmcp-<version>-setup.exe` — NSIS installer (firewall rule, startup registration)
 
 ## License
 

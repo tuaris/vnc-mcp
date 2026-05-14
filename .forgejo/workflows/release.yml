@@ -29,7 +29,7 @@ jobs:
       - name: Verify binaries
         run: |
           file zig-out/bin/vnc-mcp-server
-          file zig-out/bin/vnc-helper.exe
+          file zig-out/bin/winmcp.exe
 
       # --- Linux jail: build NSIS installer ---
       - name: Provision Linux jail
@@ -72,19 +72,18 @@ jobs:
           case "$VERSION" in [0-9]*) ;; *) VERSION="0.0.0" ;; esac
 
           doas mkdir -p "$JPATH/tmp/build"
-          doas cp zig-out/bin/vnc-helper.exe "$JPATH/tmp/build/"
-          doas cp installer/vnc-helper.nsi "$JPATH/tmp/build/"
-          doas cp helper/vnc-ocr.ps1 helper/vnc-uia.ps1 "$JPATH/tmp/build/"
+          doas cp zig-out/bin/winmcp.exe "$JPATH/tmp/build/"
+          doas cp installer/winmcp.nsi "$JPATH/tmp/build/"
 
           # VI_VERSION must be numeric X.X.X for VIProductVersion (no pre-release suffix)
           VI_VERSION=$(echo "$VERSION" | sed 's/-.*//')
 
           doas jexec "$LINUX_JAIL" sh -c \
-            "cd /tmp/build && makensis -DVERSION=${VERSION} -DVI_VERSION=${VI_VERSION} -DOUTFILE=vnc-helper-${VERSION}-setup.exe vnc-helper.nsi"
+            "cd /tmp/build && makensis -DVERSION=${VERSION} -DVI_VERSION=${VI_VERSION} -DOUTFILE=winmcp-${VERSION}-setup.exe winmcp.nsi"
 
-          cp "$JPATH/tmp/build/vnc-helper-${VERSION}-setup.exe" .
-          file "vnc-helper-${VERSION}-setup.exe"
-          ls -l "vnc-helper-${VERSION}-setup.exe"
+          cp "$JPATH/tmp/build/winmcp-${VERSION}-setup.exe" .
+          file "winmcp-${VERSION}-setup.exe"
+          ls -l "winmcp-${VERSION}-setup.exe"
 
       - name: Tear down Linux jail
         if: always()
@@ -123,7 +122,7 @@ jobs:
 
           # Create release
           RESP=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## VNC MCP Server $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **vnc-helper-${VERSION}-setup.exe** — Windows installer (tray app + firewall rule + startup)\\n- **vnc-helper-windows-amd64.exe** — Standalone Windows helper binary\\n- **vnc-mcp-server-freebsd-amd64** — MCP server for FreeBSD\",\"draft\":false,\"prerelease\":false}" \
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## VNC MCP Server $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **winmcp-${VERSION}-setup.exe** — Windows installer (tray app + firewall rule + startup)\\n- **winmcp-windows-amd64.exe** — Standalone WinMCP agent binary\\n- **vnc-mcp-server-freebsd-amd64** — MCP server for FreeBSD\",\"draft\":false,\"prerelease\":false}" \
             "$BASE_URL/releases")
           echo "Create release response: $RESP"
           RELEASE_ID=$(echo "$RESP" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
@@ -136,16 +135,16 @@ jobs:
           # Upload installer
           curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
             -H "Content-Type: application/octet-stream" \
-            --data-binary "@vnc-helper-${VERSION}-setup.exe" \
-            "$BASE_URL/releases/$RELEASE_ID/assets?name=vnc-helper-${VERSION}-setup.exe"
+            --data-binary "@winmcp-${VERSION}-setup.exe" \
+            "$BASE_URL/releases/$RELEASE_ID/assets?name=winmcp-${VERSION}-setup.exe"
           echo "Uploaded installer"
 
-          # Upload standalone helper binary
+          # Upload standalone WinMCP binary
           curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
             -H "Content-Type: application/octet-stream" \
-            --data-binary @zig-out/bin/vnc-helper.exe \
-            "$BASE_URL/releases/$RELEASE_ID/assets?name=vnc-helper-windows-amd64.exe"
-          echo "Uploaded standalone helper"
+            --data-binary @zig-out/bin/winmcp.exe \
+            "$BASE_URL/releases/$RELEASE_ID/assets?name=winmcp-windows-amd64.exe"
+          echo "Uploaded WinMCP agent"
 
           # Upload MCP server binary
           curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \

@@ -1,5 +1,5 @@
 /*
- * vnc-helper.c — Windows helper agent for VNC MCP Server
+ * winmcp.c — WinMCP agent for VNC MCP Server
  *
  * Provides local system info (cursor, windows, screen) and command execution
  * over a simple JSON-over-TCP protocol. Runs as a system tray application.
@@ -7,18 +7,18 @@
  * Cross-compile from FreeBSD:
  *   zig build helper
  * Or manually:
- *   zig cc -target x86_64-windows-gnu -O2 -mwindows -o vnc-helper.exe \
- *     helper/vnc-helper.c helper/vnc-helper-auth.c helper/vnc-helper-commands.c \
- *     helper/vnc-helper-registry.c helper/vnc-helper-process.c \
- *     helper/vnc-helper-ocr.c helper/vnc-helper-uia.c \
+ *   zig cc -target x86_64-windows-gnu -O2 -mwindows -o winmcp.exe \
+ *     helper/winmcp.c helper/winmcp-auth.c helper/winmcp-commands.c \
+ *     helper/winmcp-registry.c helper/winmcp-process.c \
+ *     helper/winmcp-ocr.c helper/winmcp-uia.c \
  *     -lws2_32 -lshell32 -luser32 -lgdi32 -ladvapi32
  *
  * Usage:
- *   vnc-helper.exe              Run as tray app (default)
- *   vnc-helper.exe -console     Run with console output for debugging
- *   vnc-helper.exe -port 9800   Set listen port (default: 9800)
- *   vnc-helper.exe install      Add to Windows startup (HKCU Run key)
- *   vnc-helper.exe uninstall    Remove from Windows startup
+ *   winmcp.exe              Run as tray app (default)
+ *   winmcp.exe -console     Run with console output for debugging
+ *   winmcp.exe -port 9800   Set listen port (default: 9800)
+ *   winmcp.exe install      Add to Windows startup (HKCU Run key)
+ *   winmcp.exe uninstall    Remove from Windows startup
  *
  * Protocol: newline-delimited JSON over TCP
  *   Request:  {"command":"cursor_position"}\n
@@ -28,7 +28,7 @@
  * BSD 2-Clause License
  */
 
-#include "vnc-helper.h"
+#include "winmcp.h"
 #include <stdarg.h>
 
 /* Forward declarations */
@@ -140,7 +140,7 @@ void log_msg(const char *fmt, ...)
     if (!g_console) return;
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "[vnc-helper] ");
+    fprintf(stderr, "[winmcp] ");
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     fflush(stderr);
@@ -273,7 +273,7 @@ static DWORD WINAPI client_thread(LPVOID param)
     if (g_icon_connected && g_hwnd) {
         g_nid.hIcon = g_icon_connected;
         snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-                 "VNC Helper (CONNECTED: %s)", ctx->ip);
+                 "WinMCP (CONNECTED: %s)", ctx->ip);
         Shell_NotifyIconA(NIM_MODIFY, &g_nid);
     }
     overlay_show();
@@ -385,7 +385,7 @@ static DWORD WINAPI server_thread(LPVOID param)
  * System Tray
  * ================================================================ */
 
-#define TRAY_WND_CLASS "VncHelperTray"
+#define TRAY_WND_CLASS "WinMcpTray"
 
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg,
                                  WPARAM wp, LPARAM lp)
@@ -397,7 +397,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg,
             GetCursorPos(&pt);
             HMENU menu = CreatePopupMenu();
             AppendMenuA(menu, MF_STRING | MF_GRAYED, IDM_ABOUT,
-                        "VNC Helper v" VNC_HELPER_VERSION);
+                        "WinMCP v" WINMCP_VERSION);
             AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
             AppendMenuA(menu, MF_STRING, IDM_EXIT, "Exit");
             SetForegroundWindow(hwnd);
@@ -417,13 +417,13 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg,
         case IDM_ABOUT: {
             char about[512];
             snprintf(about, sizeof(about),
-                     "VNC Helper Agent v" VNC_HELPER_VERSION "\n"
+                     "WinMCP Agent v" WINMCP_VERSION "\n"
                      "Part of vnc-mcp-server\n\n"
                      "Listening on port %d\n\n"
                      "Copyright (c) 2026,\n"
                      "The Daniel Morante Company, Inc.",
                      g_port);
-            MessageBoxA(NULL, about, "VNC Helper",
+            MessageBoxA(NULL, about, "WinMCP",
                         MB_OK | MB_ICONINFORMATION);
             break;
         }
@@ -457,7 +457,7 @@ static void setup_tray(HINSTANCE hInstance)
     wc.lpszClassName  = TRAY_WND_CLASS;
     RegisterClassA(&wc);
 
-    g_hwnd = CreateWindowA(TRAY_WND_CLASS, "VNC Helper", 0,
+    g_hwnd = CreateWindowA(TRAY_WND_CLASS, "WinMCP", 0,
                            0, 0, 0, 0,
                            HWND_MESSAGE, NULL, hInstance, NULL);
 
@@ -477,7 +477,7 @@ static void setup_tray(HINSTANCE hInstance)
 
     g_nid.hIcon            = g_icon_normal;
     snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-             "VNC Helper (port %d)", g_port);
+             "WinMCP (port %d)", g_port);
 
     Shell_NotifyIconA(NIM_ADD, &g_nid);
 }
@@ -491,7 +491,7 @@ static void setup_tray(HINSTANCE hInstance)
  * WS_EX_TOPMOST + WS_EX_TOOLWINDOW + WS_EX_LAYERED (click-through)
  * ================================================================ */
 
-#define OVERLAY_WND_CLASS "VncHelperOverlay"
+#define OVERLAY_WND_CLASS "WinMcpOverlay"
 #define OVERLAY_TIMER_ID  42
 #define OVERLAY_WIDTH     260
 #define OVERLAY_HEIGHT    30
@@ -673,7 +673,7 @@ static LRESULT CALLBACK overlay_wnd_proc(HWND hwnd, UINT msg,
                 if (g_icon_normal && g_hwnd) {
                     g_nid.hIcon = g_icon_normal;
                     snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-                             "VNC Helper (port %d)", g_port);
+                             "WinMCP (port %d)", g_port);
                     Shell_NotifyIconA(NIM_MODIFY, &g_nid);
                 }
             }
@@ -735,7 +735,7 @@ static void overlay_hide(void)
  * ================================================================ */
 
 #define REG_RUN_KEY    "Software\\Microsoft\\Windows\\CurrentVersion\\Run"
-#define REG_VALUE_NAME "VncHelper"
+#define REG_VALUE_NAME "WinMCP"
 
 static void do_install(void)
 {
@@ -812,8 +812,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    wcscmp(wargv[i], L"--help") == 0) {
             AllocConsole();
             freopen("CONOUT$", "w", stdout);
-            printf("VNC Helper Agent v" VNC_HELPER_VERSION "\n\n"
-                   "Usage: vnc-helper.exe [options]\n"
+            printf("WinMCP Agent v" WINMCP_VERSION "\n\n"
+                   "Usage: winmcp.exe [options]\n"
                    "  -console              Show console output\n"
                    "  -port PORT            Listen port (default: %d)\n"
                    "  -password-file PATH   Read VNC password from file\n"
@@ -837,13 +837,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
 
     /* Single-instance enforcement via named mutex */
-    HANDLE hMutex = CreateMutexA(NULL, FALSE, "VncHelperSingleInstance");
+    HANDLE hMutex = CreateMutexA(NULL, FALSE, "WinMcpSingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         if (g_console) {
-            fprintf(stderr, "VNC Helper is already running. Exiting.\n");
+            fprintf(stderr, "WinMCP is already running. Exiting.\n");
         } else {
-            MessageBoxA(NULL, "VNC Helper is already running.",
-                        "VNC Helper", MB_OK | MB_ICONINFORMATION);
+            MessageBoxA(NULL, "WinMCP is already running.",
+                        "WinMCP", MB_OK | MB_ICONINFORMATION);
         }
         if (hMutex) CloseHandle(hMutex);
         return 0;
@@ -859,7 +859,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         return 1;
     }
 
-    log_msg("VNC Helper v" VNC_HELPER_VERSION " starting on port %d", g_port);
+    log_msg("WinMCP v" WINMCP_VERSION " starting on port %d", g_port);
 
     /* Initialize authentication (password file or registry) */
     init_auth();

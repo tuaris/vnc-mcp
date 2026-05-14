@@ -1,5 +1,5 @@
 /*
- * vnc-helper-commands.c — Basic helper commands
+ * winmcp-commands.c — Basic helper commands
  *
  * cursor_position, window_list, active_window, set_active_window,
  * manage_window, clipboard_get, clipboard_set, run_command,
@@ -9,7 +9,7 @@
  * BSD 2-Clause License
  */
 
-#include "vnc-helper.h"
+#include "winmcp.h"
 
 /* ================================================================
  * Command: cursor_position
@@ -820,7 +820,7 @@ void cmd_file_download(SOCKET sock, const char *json)
  * exclusion). Used by vnc_click for visual confirmation.
  * ================================================================ */
 
-#define MARKER_WND_CLASS  "VncHelperMarker"
+#define MARKER_WND_CLASS  "WinMcpMarker"
 #define MARKER_TIMER_ID   99
 #define MARKER_RADIUS     20
 #define MARKER_STROKE     3

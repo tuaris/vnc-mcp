@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Helper agent rebranded to WinMCP** — all helper source files, binary, installer, and internal identifiers renamed from `vnc-helper` to `winmcp`. Output binary is now `winmcp.exe`. Install directory is `Program Files\WinMCP`. Registry key, firewall rule, mutex, and window classes all updated.
+- **PowerShell scripts removed** — `vnc-uia.ps1` deleted (replaced by native COM in v0.5.0-rc3). `vnc-ocr.ps1` deleted (stub returns error pending native DLL, see #14). Installer no longer ships PS1 files.
+- **OCR tool stubbed** — `vnc_ocr_region` returns an error until the native MSVC DLL is implemented (#14).
+- **MCP tool names unchanged** — all `vnc_*` tool names preserved for backward compatibility.
+
 ## [0.5.0] - 2026-05-13
 
 ### Added
@@ -53,7 +61,7 @@
 ### Added
 - **`vnc_set_active_window` tool** — activate/focus a window by title substring, class name, or PID. Uses `AttachThreadInput` trick to bypass Windows foreground lock.
 - **`vnc_helper_clipboard_get` / `vnc_helper_clipboard_set` tools** — read/write Windows clipboard via Win32 API (CF_UNICODETEXT) for full Unicode support.
-- **Single-instance enforcement** — named mutex prevents duplicate `vnc-helper.exe` processes.
+- **Single-instance enforcement** — named mutex prevents duplicate helper agent processes.
 
 ### Fixed
 - **Download trailing byte (#13)** — `calcSizeUpperBound` returned 1–2 extra bytes; now computes exact size from base64 padding.

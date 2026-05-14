@@ -1,0 +1,4 @@
+#include "resource.h"
+
+IDI_TRAY_NORMAL    ICON "winmcp.ico"
+IDI_TRAY_CONNECTED ICON "winmcp-connected.ico"

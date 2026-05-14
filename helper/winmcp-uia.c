@@ -1,5 +1,5 @@
 /*
- * vnc-helper-uia.c — Native UI Automation commands via COM
+ * winmcp-uia.c — Native UI Automation commands via COM
  *
  * Direct IUIAutomation COM calls — no PowerShell, no .ps1 dependency.
  * Replaces the previous PowerShell wrapper (vnc-uia.ps1).
@@ -11,7 +11,7 @@
 #define COBJMACROS
 #include <initguid.h>
 
-#include "vnc-helper.h"
+#include "winmcp.h"
 
 #include <ole2.h>
 #include <oleauto.h>

@@ -39,32 +39,32 @@ pub fn build(b: *std.Build) void {
 
     // Helper agent (Windows cross-compile)
     // Step 1: Compile resource file (.rc → .res.o)
-    const helper_step = b.step("helper", "Cross-compile vnc-helper.exe for Windows");
+    const helper_step = b.step("helper", "Cross-compile winmcp.exe for Windows");
     const compile_rc = b.addSystemCommand(&.{
         "zig",    "rc",
         "/i",     "helper/resources",
-        "/fo",    "zig-out/bin/vnc-helper.res.o",
-        "helper/resources/vnc-helper.rc",
+        "/fo",    "zig-out/bin/winmcp.res.o",
+        "helper/resources/winmcp.rc",
     });
     compile_rc.step.dependOn(b.getInstallStep());
 
     // Step 2: Compile and link with resource object
     const build_helper = b.addSystemCommand(&.{
         "zig",       "cc",
-        "helper/vnc-helper.c",
-        "helper/vnc-helper-auth.c",
-        "helper/vnc-helper-commands.c",
-        "helper/vnc-helper-registry.c",
-        "helper/vnc-helper-process.c",
-        "helper/vnc-helper-ocr.c",
-        "helper/vnc-helper-uia.c",
-        "zig-out/bin/vnc-helper.res.o",
+        "helper/winmcp.c",
+        "helper/winmcp-auth.c",
+        "helper/winmcp-commands.c",
+        "helper/winmcp-registry.c",
+        "helper/winmcp-process.c",
+        "helper/winmcp-ocr.c",
+        "helper/winmcp-uia.c",
+        "zig-out/bin/winmcp.res.o",
         "-target",   "x86_64-windows-gnu",
         "-Ihelper",
         "-Ihelper/resources",
         "-O2",
         "-Wl,--subsystem,windows",
-        "-o",        "zig-out/bin/vnc-helper.exe",
+        "-o",        "zig-out/bin/winmcp.exe",
         "-lws2_32",
         "-lshell32",
         "-luser32",

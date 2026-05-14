@@ -1,12 +1,12 @@
 /*
- * vnc-helper.h — Shared declarations for vnc-helper modules
+ * winmcp.h — Shared declarations for WinMCP agent modules
  *
  * Copyright (c) 2026, The Daniel Morante Company, Inc.
  * BSD 2-Clause License
  */
 
-#ifndef VNC_HELPER_H
-#define VNC_HELPER_H
+#ifndef WINMCP_H
+#define WINMCP_H
 
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
@@ -21,7 +21,7 @@
 #include <string.h>
 #include <tlhelp32.h>
 
-#define VNC_HELPER_VERSION "0.2.0"
+#define WINMCP_VERSION "0.2.0"
 #define DEFAULT_PORT       9800
 #define MAX_REQUEST        65536
 #define MAX_RESPONSE       (2 * 1024 * 1024)
@@ -39,7 +39,7 @@ typedef struct {
 } MarkerRequest;
 
 /* ================================================================
- * Globals (defined in vnc-helper.c)
+ * Globals (defined in winmcp.c)
  * ================================================================ */
 
 extern int  g_port;
@@ -61,7 +61,7 @@ extern volatile DWORD g_overlay_linger_until;
 #define OVERLAY_LINGER_MS 30000
 
 /* ================================================================
- * Utility functions (defined in vnc-helper.c)
+ * Utility functions (defined in winmcp.c)
  * ================================================================ */
 
 void log_msg(const char *fmt, ...);
@@ -72,14 +72,14 @@ int  json_get_string(const char *json, const char *key, char *out, int out_max);
 int  json_get_int(const char *json, const char *key, int *out);
 
 /* ================================================================
- * Auth (defined in vnc-helper-auth.c)
+ * Auth (defined in winmcp-auth.c)
  * ================================================================ */
 
 void init_auth(void);
 int  auth_client(SOCKET sock);
 
 /* ================================================================
- * Commands (defined in vnc-helper-commands.c)
+ * Commands (defined in winmcp-commands.c)
  * ================================================================ */
 
 void cmd_cursor_position(SOCKET sock);
@@ -99,7 +99,7 @@ void cmd_click_marker(SOCKET sock, const char *json);
 void create_click_marker(int cx, int cy, int duration_ms);
 
 /* ================================================================
- * Registry (defined in vnc-helper-registry.c)
+ * Registry (defined in winmcp-registry.c)
  * ================================================================ */
 
 void cmd_registry_read(SOCKET sock, const char *json);
@@ -107,7 +107,7 @@ void cmd_registry_write(SOCKET sock, const char *json);
 void cmd_registry_list(SOCKET sock, const char *json);
 
 /* ================================================================
- * Process & Service (defined in vnc-helper-process.c)
+ * Process & Service (defined in winmcp-process.c)
  * ================================================================ */
 
 void cmd_process_list(SOCKET sock);
@@ -116,17 +116,17 @@ void cmd_service_list(SOCKET sock);
 void cmd_service_control(SOCKET sock, const char *json);
 
 /* ================================================================
- * OCR (defined in vnc-helper-ocr.c)
+ * OCR (defined in winmcp-ocr.c)
  * ================================================================ */
 
 void cmd_ocr_region(SOCKET sock, const char *json);
 
 /* ================================================================
- * UI Automation (defined in vnc-helper-uia.c)
+ * UI Automation (defined in winmcp-uia.c)
  * ================================================================ */
 
 void cmd_ui_tree(SOCKET sock, const char *json);
 void cmd_ui_element_text(SOCKET sock, const char *json);
 void cmd_ui_click_element(SOCKET sock, const char *json);
 
-#endif /* VNC_HELPER_H */
+#endif /* WINMCP_H */

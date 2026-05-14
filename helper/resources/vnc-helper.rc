@@ -1,4 +1,0 @@
-#include "resource.h"
-
-IDI_TRAY_NORMAL    ICON "vnc-helper.ico"
-IDI_TRAY_CONNECTED ICON "vnc-helper-connected.ico"
