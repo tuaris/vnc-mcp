@@ -76,6 +76,19 @@ pub fn build(b: *std.Build) void {
     build_helper.step.dependOn(&compile_rc.step);
     helper_step.dependOn(&build_helper.step);
 
+    // Native DLL (winmcp-native.dll)
+    const build_native_dll = b.addSystemCommand(&.{
+        "zig",       "cc",
+        "helper/native/winmcp-native.c",
+        "-target",   "x86_64-windows-gnu",
+        "-Ihelper/native",
+        "-O2",
+        "-shared",
+        "-o",        "zig-out/bin/winmcp-native.dll",
+    });
+    build_native_dll.step.dependOn(b.getInstallStep());
+    helper_step.dependOn(&build_native_dll.step);
+
     // Unit tests
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),

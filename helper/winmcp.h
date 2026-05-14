@@ -61,6 +61,32 @@ extern volatile DWORD g_overlay_linger_until;
 #define OVERLAY_LINGER_MS 30000
 
 /* ================================================================
+ * Native DLL (winmcp-native.dll) — loaded at startup via LoadLibrary
+ * ================================================================ */
+
+/* Function pointer types matching winmcp-native.h exports */
+typedef int (*wmcp_version_fn)(char *out, int out_max);
+typedef int (*wmcp_screenshot_fn)(int x, int y, int w, int h,
+                                  unsigned char *jpeg_out, int jpeg_max,
+                                  int *jpeg_len, int quality);
+typedef int (*wmcp_ocr_region_fn)(int x, int y, int w, int h,
+                                  const char *lang,
+                                  char *text_out, int text_max);
+
+typedef struct {
+    HMODULE             handle;          /* LoadLibrary handle (NULL if not loaded) */
+    wmcp_version_fn     version;
+    wmcp_screenshot_fn  screenshot;
+    wmcp_ocr_region_fn  ocr_region;
+} WmcpNative;
+
+extern WmcpNative g_native;
+
+/* Load/unload the native DLL. Returns 1 if loaded, 0 if not found. */
+int  native_dll_load(void);
+void native_dll_unload(void);
+
+/* ================================================================
  * Utility functions (defined in winmcp.c)
  * ================================================================ */
 

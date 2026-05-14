@@ -55,6 +55,62 @@ int  g_auth_enabled      = 0;
 const char *g_password_file = NULL;
 volatile DWORD g_overlay_linger_until = 0; /* GetTickCount deadline for auto-hide */
 
+WmcpNative g_native = {0};  /* native DLL function pointers */
+
+
+/* ================================================================
+ * Native DLL Loader
+ * ================================================================ */
+
+#define NATIVE_DLL_NAME "winmcp-native.dll"
+
+int native_dll_load(void)
+{
+    /* Try loading from same directory as the executable */
+    char dll_path[MAX_PATH];
+    GetModuleFileNameA(NULL, dll_path, MAX_PATH);
+
+    /* Replace executable name with DLL name */
+    char *slash = strrchr(dll_path, '\\');
+    if (slash)
+        strcpy(slash + 1, NATIVE_DLL_NAME);
+    else
+        strcpy(dll_path, NATIVE_DLL_NAME);
+
+    g_native.handle = LoadLibraryA(dll_path);
+    if (!g_native.handle) {
+        /* Try bare name (searches PATH, system dirs) */
+        g_native.handle = LoadLibraryA(NATIVE_DLL_NAME);
+    }
+
+    if (!g_native.handle) {
+        log_msg("Native DLL not found (optional): %s", dll_path);
+        return 0;
+    }
+
+    g_native.version    = (wmcp_version_fn)GetProcAddress(g_native.handle, "wmcp_version");
+    g_native.screenshot = (wmcp_screenshot_fn)GetProcAddress(g_native.handle, "wmcp_screenshot");
+    g_native.ocr_region = (wmcp_ocr_region_fn)GetProcAddress(g_native.handle, "wmcp_ocr_region");
+
+    /* Log what we found */
+    char ver_buf[256] = {0};
+    if (g_native.version && g_native.version(ver_buf, sizeof(ver_buf)) == 0) {
+        log_msg("Native DLL loaded: %s", ver_buf);
+    } else {
+        log_msg("Native DLL loaded (version query failed)");
+    }
+
+    return 1;
+}
+
+void native_dll_unload(void)
+{
+    if (g_native.handle) {
+        FreeLibrary(g_native.handle);
+        memset(&g_native, 0, sizeof(g_native));
+    }
+}
+
 
 /* ================================================================
  * JSON Helpers
@@ -864,6 +920,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Initialize authentication (password file or registry) */
     init_auth();
 
+    /* Load native DLL for DXGI/OCR capabilities (optional) */
+    native_dll_load();
+
     /* Start TCP server in background thread */
     CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
 
@@ -877,6 +936,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         DispatchMessageA(&msg);
     }
 
+    native_dll_unload();
     DeleteCriticalSection(&g_cs);
     WSACleanup();
     return 0;
