@@ -1,5 +1,5 @@
 /*
- * vnc-helper-registry.c — Windows registry commands
+ * winmcp-registry.c — Windows registry commands
  *
  * registry_read, registry_write, registry_list
  *
@@ -7,7 +7,7 @@
  * BSD 2-Clause License
  */
 
-#include "vnc-helper.h"
+#include "winmcp.h"
 
 /* ================================================================
  * Command: registry_read

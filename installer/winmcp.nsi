@@ -1,5 +1,5 @@
-; VNC Helper Agent — NSIS Installer
-; Installs vnc-helper.exe as a system tray app with firewall rule and user startup
+; WinMCP Agent — NSIS Installer
+; Installs winmcp.exe as a system tray app with firewall rule and user startup
 
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"
@@ -11,24 +11,24 @@
   !define VERSION "0.0.0"
 !endif
 !ifndef OUTFILE
-  !define OUTFILE "vnc-helper-setup.exe"
+  !define OUTFILE "winmcp-setup.exe"
 !endif
 !ifndef VI_VERSION
   !define VI_VERSION "${VERSION}"
 !endif
 
 ; --- General ---
-Name "VNC Helper Agent"
+Name "WinMCP Agent"
 OutFile "${OUTFILE}"
-InstallDir "$PROGRAMFILES64\VNC Helper"
-InstallDirRegKey HKLM "Software\VNC Helper" "InstallDir"
+InstallDir "$PROGRAMFILES64\WinMCP"
+InstallDirRegKey HKLM "Software\WinMCP" "InstallDir"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 ; --- Version info embedded in the installer exe ---
 VIProductVersion "${VI_VERSION}.0"
-VIAddVersionKey "ProductName" "VNC Helper Agent"
-VIAddVersionKey "FileDescription" "VNC Helper Agent Installer"
+VIAddVersionKey "ProductName" "WinMCP Agent"
+VIAddVersionKey "FileDescription" "WinMCP Agent Installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "BSD-2-Clause"
 VIAddVersionKey "CompanyName" "The Daniel Morante Company, Inc."
@@ -83,83 +83,79 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   ; Kill any running tray instance (silent — may not be running on fresh install)
-  nsExec::Exec 'taskkill /F /IM vnc-helper.exe'
+  nsExec::Exec 'taskkill /F /IM winmcp.exe'
   Sleep 500
 
   ; Copy files
-  File "vnc-helper.exe"
-  File "vnc-ocr.ps1"
-  File "vnc-uia.ps1"
+  File "winmcp.exe"
 
   ; Register in user startup (runs as tray app on login)
-  nsExec::ExecToLog '"$INSTDIR\vnc-helper.exe" -port $Port install'
+  nsExec::ExecToLog '"$INSTDIR\winmcp.exe" -port $Port install'
 
   ; Add firewall rule
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="VNC Helper Agent"'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="VNC Helper Agent" dir=in action=allow protocol=TCP localport=$Port program="$INSTDIR\vnc-helper.exe" enable=yes'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="WinMCP Agent"'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="WinMCP Agent" dir=in action=allow protocol=TCP localport=$Port program="$INSTDIR\winmcp.exe" enable=yes'
 
   ; Start the tray app now
-  Exec '"$INSTDIR\vnc-helper.exe" -port $Port'
+  Exec '"$INSTDIR\winmcp.exe" -port $Port'
 
   ; Write uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   ; Registry for Add/Remove Programs
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
-    "DisplayName" "VNC Helper Agent"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
+    "DisplayName" "WinMCP Agent"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
     "DisplayVersion" "${VERSION}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
     "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
     "InstallLocation" "$INSTDIR"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
     "Publisher" "The Daniel Morante Company, Inc."
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
-    "DisplayIcon" '"$INSTDIR\vnc-helper.exe",0'
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
+    "DisplayIcon" '"$INSTDIR\winmcp.exe",0'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
     "URLInfoAbout" "https://pacyworld.dev/pacyworld/vnc-mcp-server"
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
     "NoModify" 1
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper" \
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP" \
     "NoRepair" 1
 
   ; Create Start Menu shortcut
-  CreateDirectory "$SMPROGRAMS\VNC Helper"
-  CreateShortcut "$SMPROGRAMS\VNC Helper\VNC Helper Agent.lnk" "$INSTDIR\vnc-helper.exe"
-  CreateShortcut "$SMPROGRAMS\VNC Helper\Uninstall.lnk" "$INSTDIR\uninstall.exe"
+  CreateDirectory "$SMPROGRAMS\WinMCP"
+  CreateShortcut "$SMPROGRAMS\WinMCP\WinMCP Agent.lnk" "$INSTDIR\winmcp.exe"
+  CreateShortcut "$SMPROGRAMS\WinMCP\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
   ; Remember install dir
-  WriteRegStr HKLM "Software\VNC Helper" "InstallDir" "$INSTDIR"
+  WriteRegStr HKLM "Software\WinMCP" "InstallDir" "$INSTDIR"
 SectionEnd
 
 ; --- Uninstaller section ---
 Section "Uninstall"
   ; Kill running tray app
-  nsExec::ExecToLog 'taskkill /F /IM vnc-helper.exe'
+  nsExec::ExecToLog 'taskkill /F /IM winmcp.exe'
   Sleep 500
 
   ; Remove from startup registry
-  nsExec::ExecToLog '"$INSTDIR\vnc-helper.exe" uninstall'
+  nsExec::ExecToLog '"$INSTDIR\winmcp.exe" uninstall'
 
   ; Remove firewall rule
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="VNC Helper Agent"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="WinMCP Agent"'
 
   ; Remove files
-  Delete "$INSTDIR\vnc-helper.exe"
-  Delete "$INSTDIR\vnc-ocr.ps1"
-  Delete "$INSTDIR\vnc-uia.ps1"
+  Delete "$INSTDIR\winmcp.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
   ; Remove Start Menu shortcuts
-  Delete "$SMPROGRAMS\VNC Helper\VNC Helper Agent.lnk"
-  Delete "$SMPROGRAMS\VNC Helper\Uninstall.lnk"
-  RMDir "$SMPROGRAMS\VNC Helper"
+  Delete "$SMPROGRAMS\WinMCP\WinMCP Agent.lnk"
+  Delete "$SMPROGRAMS\WinMCP\Uninstall.lnk"
+  RMDir "$SMPROGRAMS\WinMCP"
 
   ; Clean registry
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VncHelper"
-  DeleteRegKey HKLM "Software\VNC Helper"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMCP"
+  DeleteRegKey HKLM "Software\WinMCP"
 SectionEnd
 
 ; --- Silent install defaults ---

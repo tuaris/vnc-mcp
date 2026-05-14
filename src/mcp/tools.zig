@@ -649,7 +649,7 @@ fn toolPasteText(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue
     return textContent(allocator, "Text pasted");
 }
 
-/// Helper tool: call the vnc-helper agent on the endpoint (persistent connection)
+/// Helper tool: call the WinMCP agent on the endpoint (persistent connection)
 fn callHelper(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []const u8, extra_params: ?[]const u8) ![]u8 {
     const ep = try getEndpoint(arguments);
     if (ep.helper_port == 0) {
@@ -682,11 +682,11 @@ fn callHelper(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []co
 }
 
 fn helperNotConfigured(allocator: std.mem.Allocator) !JsonValue {
-    return textContent(allocator, "Helper agent not configured for this endpoint. Set helper_port in endpoints.json and run vnc-helper.exe on the target machine.");
+    return textContent(allocator, "Helper agent not configured for this endpoint. Set helper_port in endpoints.json and run winmcp.exe on the target machine.");
 }
 
 fn helperNotAvailable(allocator: std.mem.Allocator) !JsonValue {
-    return textContent(allocator, "Helper agent not available. Ensure vnc-helper.exe is running on the target machine.");
+    return textContent(allocator, "Helper agent not available. Ensure winmcp.exe is running on the target machine.");
 }
 
 fn toolCursorPosition(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {

@@ -1,5 +1,5 @@
 /*
- * vnc-helper-process.c — Process and service management commands
+ * winmcp-process.c — Process and service management commands
  *
  * process_list, process_kill, service_list, service_control
  *
@@ -7,7 +7,7 @@
  * BSD 2-Clause License
  */
 
-#include "vnc-helper.h"
+#include "winmcp.h"
 
 /* ================================================================
  * Command: process_list
