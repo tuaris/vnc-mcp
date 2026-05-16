@@ -80,6 +80,25 @@ DEFINE_GUID(IID_IMemoryBufferByteAccess,
     0x5b0d3235, 0x4dba, 0x4d44, 0x86, 0x5e, 0x8f, 0x1d, 0x0e, 0x4f, 0xd0, 0x4d);
 DEFINE_GUID(IID_IMemoryBuffer,
     0xfbc4dd2a, 0x245b, 0x11e4, 0xaf, 0x98, 0x68, 0x94, 0x23, 0x26, 0x0c, 0xf8);
+DEFINE_GUID(IID_IClosable,
+    0x30d5a829, 0x7fa4, 0x4026, 0x83, 0xbb, 0xd7, 0x5b, 0xae, 0x4e, 0xa9, 0x9e);
+
+/* IClosable — WinRT interface for committing/releasing resources */
+typedef struct IClosable IClosable;
+typedef struct IClosableVtbl {
+    /* IUnknown (0-2) */
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IClosable *This, REFIID riid, void **ppv);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IClosable *This);
+    ULONG   (STDMETHODCALLTYPE *Release)(IClosable *This);
+    /* IInspectable (3-5) */
+    HRESULT (STDMETHODCALLTYPE *GetIids)(IClosable *This, ULONG *cnt, IID **iids);
+    HRESULT (STDMETHODCALLTYPE *GetRuntimeClassName)(IClosable *This, HSTRING *name);
+    HRESULT (STDMETHODCALLTYPE *GetTrustLevel)(IClosable *This, int *level);
+    /* IClosable (6) */
+    HRESULT (STDMETHODCALLTYPE *Close)(IClosable *This);
+} IClosableVtbl;
+
+struct IClosable { IClosableVtbl *lpVtbl; };
 
 typedef struct IMemoryBufferByteAccessVtbl {
     /* IUnknown */
@@ -765,7 +784,7 @@ WMCP_API int wmcp_ocr_region(int x, int y, int w, int h,
     ILanguageFactory *langFactory = NULL;
     ILanguage *language = NULL;
 
-    /* Step 3: Create SoftwareBitmap(Bgra8, w, h, Premultiplied) */
+    /* Step 3: Create SoftwareBitmap(Bgra8, w, h, Ignore) */
     ocr_dbg("step3 RoGetActivationFactory(SoftwareBitmap)...");
     HSTRING hs_bitmap_class = create_hstring(L"Windows.Graphics.Imaging.SoftwareBitmap");
     hr = winrt.RoGetFactory(hs_bitmap_class, &IID_ISoftwareBitmapFactory, (void **)&bmpFactory);
@@ -773,9 +792,9 @@ WMCP_API int wmcp_ocr_region(int x, int y, int w, int h,
     ocr_dbg("step3 result: hr=0x%08lx factory=%p", (unsigned long)hr, (void*)bmpFactory);
     if (FAILED(hr) || !bmpFactory) { result = WMCP_ERR_OCR_FACTORY; goto ocr_cleanup; }
 
-    ocr_dbg("step3b CreateWithAlpha(Bgra8, %d, %d)...", w, h);
+    ocr_dbg("step3b CreateWithAlpha(Bgra8, %d, %d, Ignore)...", w, h);
     hr = bmpFactory->lpVtbl->CreateWithAlpha(bmpFactory,
-        BitmapPixelFormat_Bgra8, w, h, BitmapAlphaMode_Premultiplied, &bitmap);
+        BitmapPixelFormat_Bgra8, w, h, BitmapAlphaMode_Ignore, &bitmap);
     ocr_dbg("step3b result: hr=0x%08lx bitmap=%p", (unsigned long)hr, (void*)bitmap);
     if (FAILED(hr) || !bitmap) { result = WMCP_ERR_OCR_BITMAP; goto ocr_cleanup; }
 
@@ -809,16 +828,56 @@ WMCP_API int wmcp_ocr_region(int x, int y, int w, int h,
     /* Copy BGRA pixels into the SoftwareBitmap's buffer */
     UINT32 expected = (UINT32)(w * h * 4);
     ocr_dbg("step4e buffer: bufCap=%u expected=%u bufPtr=%p", bufCap, expected, (void*)bufPtr);
+
+    /* Dump first 4 BGRA pixels from captured data to verify DXGI capture */
+    if (expected >= 16) {
+        ocr_dbg("step4e src pixels[0..15]: %02x %02x %02x %02x  %02x %02x %02x %02x  %02x %02x %02x %02x  %02x %02x %02x %02x",
+            pixels[0], pixels[1], pixels[2], pixels[3],
+            pixels[4], pixels[5], pixels[6], pixels[7],
+            pixels[8], pixels[9], pixels[10], pixels[11],
+            pixels[12], pixels[13], pixels[14], pixels[15]);
+    }
+
     if (bufCap >= expected) {
         memcpy(bufPtr, pixels, expected);
         ocr_dbg("step4e memcpy done (%u bytes)", expected);
+        /* Verify write: dump first 4 pixels from bitmap buffer */
+        if (expected >= 16) {
+            ocr_dbg("step4e dst pixels[0..15]: %02x %02x %02x %02x  %02x %02x %02x %02x  %02x %02x %02x %02x  %02x %02x %02x %02x",
+                bufPtr[0], bufPtr[1], bufPtr[2], bufPtr[3],
+                bufPtr[4], bufPtr[5], bufPtr[6], bufPtr[7],
+                bufPtr[8], bufPtr[9], bufPtr[10], bufPtr[11],
+                bufPtr[12], bufPtr[13], bufPtr[14], bufPtr[15]);
+        }
     } else {
         ocr_dbg("step4e SKIPPED: bufCap(%u) < expected(%u)", bufCap, expected);
     }
 
-    /* Release the buffer lock before OCR */
+    /* Release byte access first */
     byteAccess->lpVtbl->Release(byteAccess); byteAccess = NULL;
+
+    /* Close the IMemoryBufferReference via IClosable to commit pixel data */
+    {
+        IClosable *closable = NULL;
+        hr = ((IInspectable *)memRef)->lpVtbl->QueryInterface((IInspectable *)memRef, &IID_IClosable, (void **)&closable);
+        if (SUCCEEDED(hr) && closable) {
+            closable->lpVtbl->Close(closable);
+            closable->lpVtbl->Release(closable);
+            ocr_dbg("step4f closed IMemoryBufferReference");
+        }
+    }
     memRef->lpVtbl->Release(memRef); memRef = NULL;
+
+    /* Close the IBitmapBuffer via IClosable to unlock the bitmap */
+    {
+        IClosable *closable = NULL;
+        hr = bmpBuf->lpVtbl->QueryInterface(bmpBuf, &IID_IClosable, (void **)&closable);
+        if (SUCCEEDED(hr) && closable) {
+            closable->lpVtbl->Close(closable);
+            closable->lpVtbl->Release(closable);
+            ocr_dbg("step4g closed IBitmapBuffer");
+        }
+    }
     memBuf->lpVtbl->Release(memBuf); memBuf = NULL;
     bmpBuf->lpVtbl->Release(bmpBuf); bmpBuf = NULL;
 
