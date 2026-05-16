@@ -159,6 +159,38 @@ fn getBool(obj: std.json.ObjectMap, key: []const u8) bool {
     return false;
 }
 
+/// MCP resource reader — returns base64-encoded content for a given URI
+pub const ResourceContent = struct {
+    blob: []const u8, // base64-encoded
+    mime_type: []const u8,
+    meta_text: []const u8, // resolution metadata
+};
+
+pub fn readResource(allocator: std.mem.Allocator, uri: []const u8) !ResourceContent {
+    // vnc://screenshot or vnc://screenshot/{endpoint}
+    if (std.mem.startsWith(u8, uri, "vnc://screenshot")) {
+        const client = try getClient(null); // default endpoint
+        const fb = try client.screenshot();
+        const jpeg = try image.encodeJpeg(allocator, fb, 90);
+        defer allocator.free(jpeg);
+
+        const base64_encoder = std.base64.standard;
+        const encoded_len = base64_encoder.Encoder.calcSize(jpeg.len);
+        const encoded = try allocator.alloc(u8, encoded_len);
+        _ = base64_encoder.Encoder.encode(encoded, jpeg);
+
+        const meta = try std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ fb.width, fb.height });
+
+        return ResourceContent{
+            .blob = encoded,
+            .mime_type = "image/jpeg",
+            .meta_text = meta,
+        };
+    }
+
+    return error.ResourceNotFound;
+}
+
 /// MCP tool content response helpers
 fn textContent(allocator: std.mem.Allocator, text: []const u8) !JsonValue {
     var content_arr = std.json.Array.init(allocator);

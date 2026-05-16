@@ -179,6 +179,10 @@ pub const McpServer = struct {
                 try self.handleToolsList(id);
             } else if (std.mem.eql(u8, method, "tools/call")) {
                 try self.handleToolsCall(id, params);
+            } else if (std.mem.eql(u8, method, "resources/list")) {
+                try self.handleResourcesList(id);
+            } else if (std.mem.eql(u8, method, "resources/read")) {
+                try self.handleResourcesRead(id, params);
             } else if (std.mem.eql(u8, method, "notifications/cancelled")) {
                 // Ignore cancellation notifications
             } else {
@@ -222,7 +226,8 @@ pub const McpServer = struct {
         const escaped_instructions = try jsonEscape(self.allocator, instructions);
         defer self.allocator.free(escaped_instructions);
 
-        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.5.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}," ++
+            "\"resources\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.5.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
@@ -334,6 +339,58 @@ pub const McpServer = struct {
         } else {
             try self.sendToolError(id, "Tool returned no result");
         }
+    }
+
+    fn handleResourcesList(self: *McpServer, id: ?JsonValue) !void {
+        const id_str = try self.formatId(id);
+        defer self.allocator.free(id_str);
+
+        const response = try std.fmt.allocPrint(self.allocator,
+            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"resources\":[" ++
+            "{{\"uri\":\"vnc://screenshot\",\"name\":\"Desktop Screenshot\",\"description\":\"Full-resolution screenshot of the remote desktop. Use this to view the current screen state.\",\"mimeType\":\"image/jpeg\"}}" ++
+            "]}}}}", .{id_str});
+        defer self.allocator.free(response);
+
+        try self.writeLine(response);
+    }
+
+    fn handleResourcesRead(self: *McpServer, id: ?JsonValue, params: ?JsonValue) !void {
+        const p = params orelse {
+            try self.sendError(id, -32602, "Missing params");
+            return;
+        };
+        const obj = if (p == .object) p.object else {
+            try self.sendError(id, -32602, "Params must be an object");
+            return;
+        };
+        const uri = if (obj.get("uri")) |u| (if (u == .string) u.string else {
+            try self.sendError(id, -32602, "URI must be a string");
+            return;
+        }) else {
+            try self.sendError(id, -32602, "Missing URI");
+            return;
+        };
+
+        const resource = tools_mod.readResource(self.allocator, uri) catch {
+            try self.sendError(id, -32602, "Resource not found");
+            return;
+        };
+
+        const id_str = try self.formatId(id);
+        defer self.allocator.free(id_str);
+
+        const escaped_uri = try jsonEscape(self.allocator, uri);
+        defer self.allocator.free(escaped_uri);
+
+        // Build response: contents array with one blob entry + text metadata
+        const response = try std.fmt.allocPrint(self.allocator,
+            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"contents\":[" ++
+            "{{\"uri\":\"{s}\",\"mimeType\":\"{s}\",\"text\":\"{s}\"}}," ++
+            "{{\"uri\":\"{s}\",\"mimeType\":\"{s}\",\"blob\":\"{s}\"}}" ++
+            "]}}}}", .{ id_str, escaped_uri, "text/plain", resource.meta_text, escaped_uri, resource.mime_type, resource.blob });
+        defer self.allocator.free(response);
+
+        try self.writeLine(response);
     }
 
     fn sendToolResult(self: *McpServer, id: ?JsonValue, content: JsonValue) !void {
