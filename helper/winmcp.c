@@ -295,6 +295,11 @@ static void handle_client(SOCKET sock)
         else if (strcmp(command, "service_list")  == 0) cmd_service_list(sock);
         else if (strcmp(command, "service_control")== 0) cmd_service_control(sock, request);
         else if (strcmp(command, "screenshot")    == 0) cmd_screenshot(sock, request);
+        else if (strcmp(command, "mouse_click") == 0) cmd_mouse_click(sock, request);
+        else if (strcmp(command, "mouse_move")  == 0) cmd_mouse_move(sock, request);
+        else if (strcmp(command, "mouse_drag")  == 0) cmd_mouse_drag(sock, request);
+        else if (strcmp(command, "key_press")   == 0) cmd_key_press(sock, request);
+        else if (strcmp(command, "type_text")   == 0) cmd_type_text(sock, request);
         else {
             char msg[128];
             snprintf(msg, sizeof(msg), "Unknown command: %s", command);

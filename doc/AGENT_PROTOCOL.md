@@ -1,6 +1,6 @@
 # Agent Protocol Specification
 
-Version: 1.0 (v0.5.0)
+Version: 1.1 (v0.3.0)
 
 ## Overview
 
@@ -620,17 +620,124 @@ The agent accepts multiple concurrent TCP connections but processes
 requests sequentially per connection. The agent maintains a system tray
 icon and connection status overlay.
 
-## Future: Screen Capture & Input Commands
+### Native Input
 
-The following commands are planned to enable the agent to fully replace
-VNC for Windows targets:
+All native input commands use the Win32 `SendInput` API for direct,
+reliable input injection. The MCP server prefers these over VNC RFB
+input events when the agent is available.
 
-- `screenshot` — DXGI Desktop Duplication capture, return base64 JPEG
-- `mouse_click` — SendInput mouse click at coordinates
-- `mouse_move` — SendInput mouse move
-- `mouse_drag` — SendInput mouse drag
-- `key_press` — SendInput keyboard input
-- `type_text` — SendInput character sequence
+#### mouse_click
 
-These additions would make the agent a complete Windows remote control
-solution, with VNC reserved for cross-platform or agent-less scenarios.
+Click at screen coordinates using `SendInput`.
+
+**Request:**
+```json
+{"command": "mouse_click", "x": 500, "y": 300, "button": "left", "double": 0}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| x | int | yes | | X screen coordinate |
+| y | int | yes | | Y screen coordinate |
+| button | string | no | `left` | `left`, `right`, or `middle` |
+| double | int | no | 0 | Non-zero for double-click |
+
+**Response:**
+```json
+{"status": "ok", "data": {"x": 500, "y": 300, "button": "left", "double": false}}
+```
+
+#### mouse_move
+
+Move the cursor to screen coordinates using `SetCursorPos`.
+
+**Request:**
+```json
+{"command": "mouse_move", "x": 500, "y": 300}
+```
+
+**Response:**
+```json
+{"status": "ok", "data": {"x": 500, "y": 300}}
+```
+
+#### mouse_drag
+
+Click-drag from one position to another with smooth interpolation.
+
+**Request:**
+```json
+{"command": "mouse_drag", "x1": 100, "y1": 200, "x2": 500, "y2": 300}
+```
+
+**Response:**
+```json
+{"status": "ok", "data": {"x1": 100, "y1": 200, "x2": 500, "y2": 300}}
+```
+
+#### key_press
+
+Press a key or key combination via `SendInput` with virtual key codes.
+Supports modifier combos like `ctrl+c`, `alt+F4`, `shift+a`.
+
+**Request:**
+```json
+{"command": "key_press", "keys": "ctrl+c"}
+```
+
+Named keys: `ctrl`, `alt`, `shift`, `win`, `return`, `enter`, `tab`,
+`escape`, `space`, `backspace`, `delete`, `insert`, `home`, `end`,
+`pageup`, `pagedown`, `up`, `down`, `left`, `right`, `f1`–`f12`,
+`capslock`, `numlock`, `printscreen`, `pause`, `apps`.
+
+Single characters (`a`–`z`, `0`–`9`, symbols) are resolved via
+`VkKeyScanA` with automatic shift detection.
+
+**Response:**
+```json
+{"status": "ok", "data": {"keys": "ctrl+c"}}
+```
+
+#### type_text
+
+Type a string using `SendInput` with `KEYEVENTF_UNICODE`. Full Unicode
+support (CJK, emoji, special characters) — works with any keyboard
+layout.
+
+**Request:**
+```json
+{"command": "type_text", "text": "Hello world"}
+```
+
+**Response:**
+```json
+{"status": "ok", "data": {"length": 11}}
+```
+
+---
+
+### Screenshot (DXGI)
+
+#### screenshot
+
+Capture the desktop (or a region) using DXGI Desktop Duplication.
+Requires `winmcp-native.dll` to be loaded.
+
+**Request:**
+```json
+{"command": "screenshot", "x": 0, "y": 0, "w": 0, "h": 0, "quality": 75}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| x | int | no | 0 | Left edge of capture region |
+| y | int | no | 0 | Top edge of capture region |
+| w | int | no | 0 | Width (0 = full screen) |
+| h | int | no | 0 | Height (0 = full screen) |
+| quality | int | no | 75 | JPEG quality (1–100) |
+
+**Response:**
+```json
+{"status": "ok", "data": {"width": 1920, "height": 1080,
+ "jpeg_bytes": 123456, "content": "base64..."}}
+```

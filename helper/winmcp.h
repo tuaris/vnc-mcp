@@ -144,6 +144,16 @@ void cmd_service_list(SOCKET sock);
 void cmd_service_control(SOCKET sock, const char *json);
 
 /* ================================================================
+ * Native Input (defined in winmcp-input.c)
+ * ================================================================ */
+
+void cmd_mouse_click(SOCKET sock, const char *json);
+void cmd_mouse_move(SOCKET sock, const char *json);
+void cmd_mouse_drag(SOCKET sock, const char *json);
+void cmd_key_press(SOCKET sock, const char *json);
+void cmd_type_text(SOCKET sock, const char *json);
+
+/* ================================================================
  * OCR (defined in winmcp-ocr.c)
  * ================================================================ */
 

@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) void {
         "helper/winmcp-process.c",
         "helper/winmcp-ocr.c",
         "helper/winmcp-uia.c",
+        "helper/winmcp-input.c",
         "zig-out/bin/winmcp.res.o",
         "-target",   "x86_64-windows-gnu",
         "-Ihelper",
