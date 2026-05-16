@@ -33,6 +33,12 @@ extern "C" {
 #define WMCP_ERR_BUFFER    -3  /* output buffer too small */
 #define WMCP_ERR_INIT      -4  /* initialization failed */
 #define WMCP_ERR_CAPTURE   -5  /* screen capture failed */
+#define WMCP_ERR_OCR_FACTORY -6  /* RoGetActivationFactory failed */
+#define WMCP_ERR_OCR_BITMAP  -7  /* SoftwareBitmap creation failed */
+#define WMCP_ERR_OCR_LOCK    -8  /* bitmap buffer lock/copy failed */
+#define WMCP_ERR_OCR_ENGINE  -9  /* OcrEngine creation failed */
+#define WMCP_ERR_OCR_ASYNC  -10  /* RecognizeAsync failed */
+#define WMCP_ERR_OCR_RESULT -11  /* result extraction failed */
 
 /*
  * wmcp_version — Get DLL version and capability info.
