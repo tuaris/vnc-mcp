@@ -407,27 +407,43 @@ fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
 
     const button_str = getString(args, "button") orelse "left";
-    const button_mask: u8 = if (std.mem.eql(u8, button_str, "right"))
-        4
-    else if (std.mem.eql(u8, button_str, "middle"))
-        2
-    else
-        1; // left
-
     const double_click = getBool(args, "double");
 
-    const client = try getClient(arguments);
+    // Cognitive forcing parameters — parsed but not acted on.
+    // Their presence in the schema encourages the agent to validate
+    // that coordinates were derived from a known-resolution image.
+    _ = getBool(args, "used_full_resolution");
+    _ = getString(args, "coordinate_source_resolution");
 
-    // Move to position, press, release
-    try client.sendPointerEvent(x, y, button_mask);
-    std.Thread.sleep(50 * std.time.ns_per_ms);
-    try client.sendPointerEvent(x, y, 0);
+    // Try agent-based click (SendInput) first — prefer native input over VNC
+    const agent_click = blk: {
+        const click_params = std.fmt.allocPrint(allocator, "\"x\":{d},\"y\":{d},\"button\":\"{s}\",\"double\":{s}", .{ x, y, button_str, if (double_click) @as([]const u8, "1") else @as([]const u8, "0") }) catch break :blk false;
+        defer allocator.free(click_params);
+        _ = callHelper(allocator, arguments, "mouse_click", click_params) catch break :blk false;
+        break :blk true;
+    };
 
-    if (double_click) {
-        std.Thread.sleep(50 * std.time.ns_per_ms);
+    if (!agent_click) {
+        // Fall back to VNC RFB pointer events
+        const button_mask: u8 = if (std.mem.eql(u8, button_str, "right"))
+            4
+        else if (std.mem.eql(u8, button_str, "middle"))
+            2
+        else
+            1;
+
+        const client = try getClient(arguments);
+
         try client.sendPointerEvent(x, y, button_mask);
         std.Thread.sleep(50 * std.time.ns_per_ms);
         try client.sendPointerEvent(x, y, 0);
+
+        if (double_click) {
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            try client.sendPointerEvent(x, y, button_mask);
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            try client.sendPointerEvent(x, y, 0);
+        }
     }
 
     // Visual confirmation: draw marker at click point + capture screenshot
@@ -440,71 +456,80 @@ fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     std.Thread.sleep(300 * std.time.ns_per_ms);
 
     // Capture confirmation screenshot
-    const fb = client.screenshot() catch {
-        // If screenshot fails, just return text
-        const msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d})", .{ x, y });
-        return textContent(allocator, msg);
-    };
-    const jpeg = image.encodeJpeg(allocator, fb, 65) catch {
-        const msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d})", .{ x, y });
-        return textContent(allocator, msg);
-    };
-    defer allocator.free(jpeg);
+    const fb = (getClient(arguments) catch null);
+    const screenshot_data = if (fb) |c| (c.screenshot() catch null) else null;
+    const jpeg = if (screenshot_data) |sd| (image.encodeJpeg(allocator, sd, 65) catch null) else null;
 
-    // Return multi-content: text description + visual confirmation image
-    const click_msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}) — yellow marker shows click location", .{ x, y });
+    if (jpeg) |j| {
+        defer allocator.free(j);
 
-    const base64_encoder = std.base64.standard;
-    const encoded_len = base64_encoder.Encoder.calcSize(jpeg.len);
-    const encoded = try allocator.alloc(u8, encoded_len);
-    _ = base64_encoder.Encoder.encode(encoded, jpeg);
+        const click_msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}) — yellow marker shows click location", .{ x, y });
 
-    var content_arr = std.json.Array.init(allocator);
+        const base64_encoder = std.base64.standard;
+        const encoded_len = base64_encoder.Encoder.calcSize(j.len);
+        const encoded = try allocator.alloc(u8, encoded_len);
+        _ = base64_encoder.Encoder.encode(encoded, j);
 
-    // Text item
-    var text_item = std.json.ObjectMap.init(allocator);
-    try text_item.put("type", JsonValue{ .string = "text" });
-    try text_item.put("text", JsonValue{ .string = click_msg });
-    try content_arr.append(JsonValue{ .object = text_item });
+        var content_arr = std.json.Array.init(allocator);
 
-    // Image item
-    var img_item = std.json.ObjectMap.init(allocator);
-    try img_item.put("type", JsonValue{ .string = "image" });
-    try img_item.put("data", JsonValue{ .string = encoded });
-    try img_item.put("mimeType", JsonValue{ .string = "image/jpeg" });
-    try content_arr.append(JsonValue{ .object = img_item });
+        var text_item = std.json.ObjectMap.init(allocator);
+        try text_item.put("type", JsonValue{ .string = "text" });
+        try text_item.put("text", JsonValue{ .string = click_msg });
+        try content_arr.append(JsonValue{ .object = text_item });
 
-    var result = std.json.ObjectMap.init(allocator);
-    try result.put("content", JsonValue{ .array = content_arr });
-    return JsonValue{ .object = result };
+        var img_item = std.json.ObjectMap.init(allocator);
+        try img_item.put("type", JsonValue{ .string = "image" });
+        try img_item.put("data", JsonValue{ .string = encoded });
+        try img_item.put("mimeType", JsonValue{ .string = "image/jpeg" });
+        try content_arr.append(JsonValue{ .object = img_item });
+
+        var result = std.json.ObjectMap.init(allocator);
+        try result.put("content", JsonValue{ .array = content_arr });
+        return JsonValue{ .object = result };
+    }
+
+    const msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d})", .{ x, y });
+    return textContent(allocator, msg);
 }
 
 fn toolTypeText(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
     const text = getString(args, "text") orelse return error.InvalidArgument;
 
-    const client = try getClient(arguments);
+    // Try agent-based typing (SendInput KEYEVENTF_UNICODE) first — full Unicode support
+    const agent_typed = blk: {
+        const escaped = helper.jsonEscape(allocator, text) catch break :blk false;
+        defer allocator.free(escaped);
+        const params = std.fmt.allocPrint(allocator, "\"text\":\"{s}\"", .{escaped}) catch break :blk false;
+        defer allocator.free(params);
+        _ = callHelper(allocator, arguments, "type_text", params) catch break :blk false;
+        break :blk true;
+    };
 
-    // Decode UTF-8 and send each codepoint as a keysym
-    var i: usize = 0;
-    while (i < text.len) {
-        const seq_len = std.unicode.utf8ByteSequenceLength(text[i]) catch {
-            i += 1;
-            continue;
-        };
-        if (i + seq_len > text.len) break;
+    if (!agent_typed) {
+        // Fall back to VNC keysym events
+        const client = try getClient(arguments);
 
-        const codepoint = std.unicode.utf8Decode(text[i..][0..seq_len]) catch {
+        var i: usize = 0;
+        while (i < text.len) {
+            const seq_len = std.unicode.utf8ByteSequenceLength(text[i]) catch {
+                i += 1;
+                continue;
+            };
+            if (i + seq_len > text.len) break;
+
+            const codepoint = std.unicode.utf8Decode(text[i..][0..seq_len]) catch {
+                i += seq_len;
+                continue;
+            };
+
+            const ks = keysym.unicodeToKeysym(codepoint);
+            try client.sendKeyEvent(ks, true);
+            try client.sendKeyEvent(ks, false);
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+
             i += seq_len;
-            continue;
-        };
-
-        const ks = keysym.unicodeToKeysym(codepoint);
-        try client.sendKeyEvent(ks, true);
-        try client.sendKeyEvent(ks, false);
-        std.Thread.sleep(10 * std.time.ns_per_ms);
-
-        i += seq_len;
+        }
     }
 
     return textContent(allocator, "Text typed");
@@ -514,57 +539,67 @@ fn toolKeyPress(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue 
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
     const keys_str = getString(args, "keys") orelse return error.InvalidArgument;
 
-    const client = try getClient(arguments);
+    // Try agent-based key press (SendInput) first
+    const agent_pressed = blk: {
+        const escaped = helper.jsonEscape(allocator, keys_str) catch break :blk false;
+        defer allocator.free(escaped);
+        const params = std.fmt.allocPrint(allocator, "\"keys\":\"{s}\"", .{escaped}) catch break :blk false;
+        defer allocator.free(params);
+        _ = callHelper(allocator, arguments, "key_press", params) catch break :blk false;
+        break :blk true;
+    };
 
-    // Parse combo like "ctrl+c", "alt+F4", "shift+a"
-    var modifiers: [4]u32 = undefined;
-    var mod_count: usize = 0;
-    var main_key: ?u32 = null;
+    if (!agent_pressed) {
+        // Fall back to VNC keysym events
+        const client = try getClient(arguments);
 
-    var it = std.mem.splitScalar(u8, keys_str, '+');
-    var parts: [8][]const u8 = undefined;
-    var part_count: usize = 0;
+        // Parse combo like "ctrl+c", "alt+F4", "shift+a"
+        var modifiers: [4]u32 = undefined;
+        var mod_count: usize = 0;
+        var main_key: ?u32 = null;
 
-    while (it.next()) |part| {
-        if (part_count < parts.len) {
-            parts[part_count] = part;
-            part_count += 1;
-        }
-    }
+        var it = std.mem.splitScalar(u8, keys_str, '+');
+        var parts: [8][]const u8 = undefined;
+        var part_count: usize = 0;
 
-    if (part_count == 0) return textContent(allocator, "No key specified");
-
-    // Last part is the main key, preceding parts are modifiers
-    for (parts[0 .. part_count - 1]) |part| {
-        if (keysym.modifierKeysym(part)) |ks| {
-            if (mod_count < modifiers.len) {
-                modifiers[mod_count] = ks;
-                mod_count += 1;
+        while (it.next()) |part| {
+            if (part_count < parts.len) {
+                parts[part_count] = part;
+                part_count += 1;
             }
         }
-    }
 
-    const main_part = parts[part_count - 1];
-    main_key = keysym.namedKeysym(main_part);
+        if (part_count == 0) return textContent(allocator, "No key specified");
 
-    if (main_key == null) {
-        // Try as modifier-only (e.g., just "ctrl")
-        main_key = keysym.modifierKeysym(main_part);
-    }
+        for (parts[0 .. part_count - 1]) |part| {
+            if (keysym.modifierKeysym(part)) |ks| {
+                if (mod_count < modifiers.len) {
+                    modifiers[mod_count] = ks;
+                    mod_count += 1;
+                }
+            }
+        }
 
-    const mk = main_key orelse return textContent(allocator, "Unknown key");
+        const main_part = parts[part_count - 1];
+        main_key = keysym.namedKeysym(main_part);
 
-    // Press modifiers, press key, release key, release modifiers
-    for (modifiers[0..mod_count]) |mod| {
-        try client.sendKeyEvent(mod, true);
-    }
-    try client.sendKeyEvent(mk, true);
-    try client.sendKeyEvent(mk, false);
+        if (main_key == null) {
+            main_key = keysym.modifierKeysym(main_part);
+        }
 
-    var ri: usize = mod_count;
-    while (ri > 0) {
-        ri -= 1;
-        try client.sendKeyEvent(modifiers[ri], false);
+        const mk = main_key orelse return textContent(allocator, "Unknown key");
+
+        for (modifiers[0..mod_count]) |mod| {
+            try client.sendKeyEvent(mod, true);
+        }
+        try client.sendKeyEvent(mk, true);
+        try client.sendKeyEvent(mk, false);
+
+        var ri: usize = mod_count;
+        while (ri > 0) {
+            ri -= 1;
+            try client.sendKeyEvent(modifiers[ri], false);
+        }
     }
 
     return textContent(allocator, "Key press sent");
@@ -576,8 +611,19 @@ fn toolMoveMouse(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue
     const x: u16 = @intCast(getInt(args, "x") orelse return error.InvalidArgument);
     const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
 
-    const client = try getClient(arguments);
-    try client.sendPointerEvent(x, y, 0);
+    // Try agent-based mouse move (SetCursorPos) first
+    const agent_moved = blk: {
+        const params = std.fmt.allocPrint(allocator, "\"x\":{d},\"y\":{d}", .{ x, y }) catch break :blk false;
+        defer allocator.free(params);
+        _ = callHelper(allocator, arguments, "mouse_move", params) catch break :blk false;
+        break :blk true;
+    };
+
+    if (!agent_moved) {
+        // Fall back to VNC pointer event
+        const client = try getClient(arguments);
+        try client.sendPointerEvent(x, y, 0);
+    }
 
     return textContent(allocator, "Mouse moved");
 }
@@ -590,27 +636,36 @@ fn toolDrag(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const x2: u16 = @intCast(getInt(args, "x2") orelse return error.InvalidArgument);
     const y2: u16 = @intCast(getInt(args, "y2") orelse return error.InvalidArgument);
 
-    const client = try getClient(arguments);
+    // Try agent-based drag (SendInput) first
+    const agent_dragged = blk: {
+        const params = std.fmt.allocPrint(allocator, "\"x1\":{d},\"y1\":{d},\"x2\":{d},\"y2\":{d}", .{ x1, y1, x2, y2 }) catch break :blk false;
+        defer allocator.free(params);
+        _ = callHelper(allocator, arguments, "mouse_drag", params) catch break :blk false;
+        break :blk true;
+    };
 
-    // Move to start, press, move to end, release
-    try client.sendPointerEvent(x1, y1, 0);
-    std.Thread.sleep(50 * std.time.ns_per_ms);
-    try client.sendPointerEvent(x1, y1, 1); // Left button down
-    std.Thread.sleep(50 * std.time.ns_per_ms);
+    if (!agent_dragged) {
+        // Fall back to VNC pointer events
+        const client = try getClient(arguments);
 
-    // Interpolate a few points for smoother drag
-    const steps: usize = 10;
-    for (1..steps) |step| {
-        const t: f32 = @as(f32, @floatFromInt(step)) / @as(f32, @floatFromInt(steps));
-        const ix: u16 = @intFromFloat(@as(f32, @floatFromInt(x1)) + (@as(f32, @floatFromInt(x2)) - @as(f32, @floatFromInt(x1))) * t);
-        const iy: u16 = @intFromFloat(@as(f32, @floatFromInt(y1)) + (@as(f32, @floatFromInt(y2)) - @as(f32, @floatFromInt(y1))) * t);
-        try client.sendPointerEvent(ix, iy, 1);
-        std.Thread.sleep(20 * std.time.ns_per_ms);
+        try client.sendPointerEvent(x1, y1, 0);
+        std.Thread.sleep(50 * std.time.ns_per_ms);
+        try client.sendPointerEvent(x1, y1, 1);
+        std.Thread.sleep(50 * std.time.ns_per_ms);
+
+        const steps: usize = 10;
+        for (1..steps) |step| {
+            const t: f32 = @as(f32, @floatFromInt(step)) / @as(f32, @floatFromInt(steps));
+            const ix: u16 = @intFromFloat(@as(f32, @floatFromInt(x1)) + (@as(f32, @floatFromInt(x2)) - @as(f32, @floatFromInt(x1))) * t);
+            const iy: u16 = @intFromFloat(@as(f32, @floatFromInt(y1)) + (@as(f32, @floatFromInt(y2)) - @as(f32, @floatFromInt(y1))) * t);
+            try client.sendPointerEvent(ix, iy, 1);
+            std.Thread.sleep(20 * std.time.ns_per_ms);
+        }
+
+        try client.sendPointerEvent(x2, y2, 1);
+        std.Thread.sleep(50 * std.time.ns_per_ms);
+        try client.sendPointerEvent(x2, y2, 0);
     }
-
-    try client.sendPointerEvent(x2, y2, 1);
-    std.Thread.sleep(50 * std.time.ns_per_ms);
-    try client.sendPointerEvent(x2, y2, 0); // Release
 
     return textContent(allocator, "Drag completed");
 }
