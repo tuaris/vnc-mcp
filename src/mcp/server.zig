@@ -227,7 +227,7 @@ pub const McpServer = struct {
         defer self.allocator.free(escaped_instructions);
 
         const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{}}," ++
-            "\"resources\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.5.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
+            "\"resources\":{{}}}},\"serverInfo\":{{\"name\":\"vnc-mcp-server\",\"version\":\"0.6.0\"}},\"instructions\":\"{s}\"}}}}", .{ id_str, escaped_instructions });
         defer self.allocator.free(response);
 
         try self.writeLine(response);

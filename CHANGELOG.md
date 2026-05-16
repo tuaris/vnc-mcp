@@ -1,12 +1,20 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-05-16
+
+### Added
+- **SendInput backend switch (Phase 4)** — `vnc_click`, `vnc_key_press`, `vnc_type_text`, `vnc_move_mouse`, and `vnc_drag` now prefer the WinMCP agent's native `SendInput` commands when available, falling back to VNC RFB events when the agent is unreachable. Provides more reliable input injection with full Unicode support.
+- **MCP resources support** — `resources/list` and `resources/read` protocol methods implemented. `vnc://screenshot` exposed as a resource returning full-resolution JPEG with resolution metadata.
+- **`vnc_click` coordinate provenance parameters** — new `used_full_resolution` (bool) and `coordinate_source_resolution` (string) parameters. Cognitive forcing functions that make the agent declare its coordinate basis before clicking.
+- **DXGI screenshot sync** — helper agent gains native DXGI Desktop Duplication screenshot via `winmcp-native.dll` (Phase 3).
+- **Native DLL scaffold sync** — helper agent loads `winmcp-native.dll` at startup via `LoadLibrary`/`GetProcAddress` with graceful degradation if absent (Phase 2).
 
 ### Changed
 - **Helper agent rebranded to WinMCP** — all helper source files, binary, installer, and internal identifiers renamed from `vnc-helper` to `winmcp`. Output binary is now `winmcp.exe`. Install directory is `Program Files\WinMCP`. Registry key, firewall rule, mutex, and window classes all updated.
 - **PowerShell scripts removed** — `vnc-uia.ps1` deleted (replaced by native COM in v0.5.0-rc3). `vnc-ocr.ps1` deleted (stub returns error pending native DLL, see #14). Installer no longer ships PS1 files.
-- **OCR tool stubbed** — `vnc_ocr_region` returns an error until the native MSVC DLL is implemented (#14).
+- **OCR tool stubbed** — `vnc_ocr_region` returns an error until the native DLL OCR is implemented (#14).
 - **MCP tool names unchanged** — all `vnc_*` tool names preserved for backward compatibility.
+- **Agent protocol v1.1** — documents native input commands (`mouse_click`, `mouse_move`, `mouse_drag`, `key_press`, `type_text`).
 
 ## [0.5.0] - 2026-05-13
 
