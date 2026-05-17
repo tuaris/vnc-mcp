@@ -4,10 +4,6 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-env:
-  LINUX_JAIL: linux-build-${{ github.run_id }}
-  JAIL_ROOT: /usr/local/jails
-
 jobs:
   release:
     runs-on: FreeBSD
@@ -23,81 +19,10 @@ jobs:
       - name: Build MCP server (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe
 
-      - name: Build Windows helper
-        run: zig build helper
-
-      - name: Verify binaries
+      - name: Verify binary
         run: |
           file zig-out/bin/vnc-mcp-server
-          file zig-out/bin/winmcp.exe
-
-      # --- Linux jail: build NSIS installer ---
-      - name: Provision Linux jail
-        run: |
-          JAIL="$LINUX_JAIL"
-          JPATH="$JAIL_ROOT/$JAIL"
-          TMPBASE="/tmp/linux-rootfs-ubuntu-24.04.4.tar.gz"
-
-          doas kldload linux64 2>/dev/null || true
-          doas kldload linux_common 2>/dev/null || true
-
-          if [ ! -f "$TMPBASE" ]; then
-            echo "==> Fetching Ubuntu 24.04 rootfs..."
-            curl -fSL -o "$TMPBASE" "https://cdimage.ubuntu.com/ubuntu-base/releases/noble/release/ubuntu-base-24.04.4-base-amd64.tar.gz"
-          fi
-
-          doas mkdir -p "$JPATH"
-          doas tar -xf "$TMPBASE" -C "$JPATH"
-          doas cp /etc/resolv.conf "$JPATH/etc/resolv.conf"
-
-          doas mkdir -p "$JPATH/proc" "$JPATH/sys" "$JPATH/dev/shm"
-          doas mount -t linprocfs linprocfs "$JPATH/proc"
-          doas mount -t linsysfs linsysfs "$JPATH/sys"
-          doas mount -t devfs devfs "$JPATH/dev"
-          doas mount -t tmpfs tmpfs "$JPATH/dev/shm"
-
-          doas jail -c name="$JAIL" path="$JPATH" ip4=inherit ip6=inherit \
-            host.hostname="$JAIL" allow.raw_sockets=1 linux=new persist
-
-          doas jexec "$JAIL" sh -c 'echo "APT::Cache-Start \"100000000\";" > /etc/apt/apt.conf.d/99cache'
-          doas jexec "$JAIL" apt-get update -qq
-          doas jexec "$JAIL" apt-get install -y -qq nsis
-
-      - name: Build NSIS installer
-        run: |
-          JPATH="$JAIL_ROOT/$LINUX_JAIL"
-          TAG="${GITHUB_REF_NAME:-dev}"
-          # Strip v prefix for version; if not a tag, use 0.0.0
-          VERSION="${TAG#v}"
-          case "$VERSION" in [0-9]*) ;; *) VERSION="0.0.0" ;; esac
-
-          doas mkdir -p "$JPATH/tmp/build"
-          doas cp zig-out/bin/winmcp.exe "$JPATH/tmp/build/"
-          doas cp installer/winmcp.nsi "$JPATH/tmp/build/"
-
-          # VI_VERSION must be numeric X.X.X for VIProductVersion (no pre-release suffix)
-          VI_VERSION=$(echo "$VERSION" | sed 's/-.*//')
-
-          doas jexec "$LINUX_JAIL" sh -c \
-            "cd /tmp/build && makensis -DVERSION=${VERSION} -DVI_VERSION=${VI_VERSION} -DOUTFILE=winmcp-${VERSION}-setup.exe winmcp.nsi"
-
-          cp "$JPATH/tmp/build/winmcp-${VERSION}-setup.exe" .
-          file "winmcp-${VERSION}-setup.exe"
-          ls -l "winmcp-${VERSION}-setup.exe"
-
-      - name: Tear down Linux jail
-        if: always()
-        run: |
-          JPATH="$JAIL_ROOT/$LINUX_JAIL"
-          doas jail -r "$LINUX_JAIL" 2>/dev/null || true
-          doas umount "$JPATH/dev/shm" 2>/dev/null || true
-          doas umount "$JPATH/dev" 2>/dev/null || true
-          doas umount "$JPATH/sys" 2>/dev/null || true
-          doas umount "$JPATH/proc" 2>/dev/null || true
-          if [ -d "$JPATH" ]; then
-            doas chflags -R noschg "$JPATH" 2>/dev/null || true
-            doas rm -rf "$JPATH"
-          fi
+          ls -la zig-out/bin/vnc-mcp-server
 
       # --- Publish release (only on tag push, not manual dispatch) ---
       - name: Publish release
@@ -122,7 +47,7 @@ jobs:
 
           # Create release
           RESP=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## VNC MCP Server $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **winmcp-${VERSION}-setup.exe** — Windows installer (tray app + firewall rule + startup)\\n- **winmcp-windows-amd64.exe** — Standalone WinMCP agent binary\\n- **vnc-mcp-server-freebsd-amd64** — MCP server for FreeBSD\",\"draft\":false,\"prerelease\":false}" \
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## VNC MCP Server $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **vnc-mcp-server-freebsd-amd64** — MCP server for FreeBSD\\n\\nThe WinMCP agent is now released separately at [winmcp/winmcp](https://pacyworld.dev/winmcp/winmcp/releases).\",\"draft\":false,\"prerelease\":false}" \
             "$BASE_URL/releases")
           echo "Create release response: $RESP"
           RELEASE_ID=$(echo "$RESP" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
@@ -131,20 +56,6 @@ jobs:
             exit 1
           fi
           echo "Created release $RELEASE_ID"
-
-          # Upload installer
-          curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary "@winmcp-${VERSION}-setup.exe" \
-            "$BASE_URL/releases/$RELEASE_ID/assets?name=winmcp-${VERSION}-setup.exe"
-          echo "Uploaded installer"
-
-          # Upload standalone WinMCP binary
-          curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @zig-out/bin/winmcp.exe \
-            "$BASE_URL/releases/$RELEASE_ID/assets?name=winmcp-windows-amd64.exe"
-          echo "Uploaded WinMCP agent"
 
           # Upload MCP server binary
           curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \

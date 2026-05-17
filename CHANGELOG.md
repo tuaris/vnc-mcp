@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Native OCR** — `vnc_ocr_region` now works via the WinMCP agent's native WinRT `Windows.Media.Ocr` implementation. No longer stubbed.
+
+### Removed
+- **Helper source code** — the `helper/` and `installer/` directories have been removed. The WinMCP agent is now a separate project at [winmcp/winmcp](https://pacyworld.dev/winmcp/winmcp) with its own build system, CI, and releases.
+- **`zig build helper` step** — the MCP server build no longer cross-compiles the Windows agent. Use the [WinMCP releases](https://pacyworld.dev/winmcp/winmcp/releases) instead.
+- **NSIS installer from release workflow** — releases now only contain the MCP server binary. The WinMCP installer is published from its own repository.
+
 ## [0.6.0] - 2026-05-16
 
 ### Added

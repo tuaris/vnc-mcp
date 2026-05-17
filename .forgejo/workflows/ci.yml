@@ -17,11 +17,7 @@ jobs:
       - name: Build MCP server
         run: zig build -Doptimize=ReleaseSafe
 
-      - name: Build Windows helper
-        run: zig build helper
-
-      - name: Verify binaries
+      - name: Verify binary
         run: |
           file zig-out/bin/vnc-mcp-server
-          file zig-out/bin/winmcp.exe
-          ls -la zig-out/bin/vnc-mcp-server zig-out/bin/winmcp.exe
+          ls -la zig-out/bin/vnc-mcp-server

@@ -1,8 +1,8 @@
 # VNC MCP Server
 
-A high-performance VNC remote desktop control server for the [Model Context Protocol](https://modelcontextprotocol.io/), with an optional Windows helper agent for extended capabilities.
+A high-performance VNC remote desktop control server for the [Model Context Protocol](https://modelcontextprotocol.io/), with optional [WinMCP](https://pacyworld.dev/winmcp/winmcp) agent support for extended Windows capabilities.
 
-Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on FreeBSD or Linux and communicates with any standard VNC server over the RFB protocol. The helper agent runs as a system tray app on Windows, providing OS-level features that VNC alone cannot offer.
+Built in **Zig**. The MCP server runs on FreeBSD or Linux and communicates with any standard VNC server over the RFB protocol. The [WinMCP agent](https://pacyworld.dev/winmcp/winmcp) runs as a system tray app on Windows, providing OS-level features that VNC alone cannot offer.
 
 ## Features
 
@@ -14,10 +14,9 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 - **DES authentication** — both VNC and helper connections use challenge-response auth (reads password from VNC server registry)
 - **On-screen indicator** — translucent overlay pill shows when an MCP client is connected
 - **Persistent connections** — connection pools for both VNC and helper, with automatic reconnection
-- **NSIS installer** — Windows installer for the helper agent (firewall rule, startup registration, uninstaller)
 - **Tool call timeout** — 45-second safety net prevents IDE hangs if a tool call stalls
 - **Multi-endpoint** — manage multiple remote desktops from a single MCP server instance
-- **CI/CD** — Forgejo Actions builds MCP server, cross-compiles helper, and packages NSIS installer on tag push
+- **CI/CD** — Forgejo Actions builds and releases the MCP server on tag push
 
 ### VNC Tools (pure RFB protocol, no helper needed)
 
@@ -51,7 +50,7 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 | `vnc_download_file` | Retrieve a file from the remote filesystem to local disk (max 10MB). |
 | `vnc_helper_clipboard_get` | Read Windows clipboard via Win32 API (full Unicode, CF_UNICODETEXT). |
 | `vnc_helper_clipboard_set` | Set Windows clipboard via Win32 API (full Unicode). Use with `vnc_key_press` Ctrl+V to paste. |
-| `vnc_ocr_region` | OCR a screen region. Currently stubbed — native DLL pending (#14). |
+| `vnc_ocr_region` | OCR a screen region using WinRT Windows.Media.Ocr via the native DLL. |
 | `vnc_ui_tree` | Get the accessibility tree of the foreground window (or by PID). Configurable depth. |
 | `vnc_ui_element_text` | Read text/value from a UI element by name or automation ID. |
 | `vnc_ui_click_element` | Invoke the default action on a UI element (click button, toggle checkbox, etc.). |
@@ -82,25 +81,20 @@ Built in **Zig** (MCP server) and **C** (Windows helper). The MCP server runs on
 └─────────────────────────────┘     └─────────────────────────────┘
 ```
 
-UI Automation uses native COM (`IUIAutomation`) for <100ms latency. OCR is currently stubbed pending a native MSVC DLL (#14).
+UI Automation uses native COM (`IUIAutomation`) for <100ms latency. OCR uses WinRT `Windows.Media.Ocr` via the native DLL.
 
 ## Building
 
 Requires **Zig 0.15.x** and **OpenSSL** (libcrypto).
 
 ```sh
-# MCP server (FreeBSD/Linux)
 zig build -Doptimize=ReleaseSafe
-
-# Windows helper (cross-compile from FreeBSD/Linux)
-zig build helper
 ```
 
 Outputs:
 - `zig-out/bin/vnc-mcp-server` — MCP server binary (~4MB)
-- `zig-out/bin/winmcp.exe` — WinMCP agent PE32+ GUI app
 
-The NSIS installer is built by CI (requires a Linux environment with `makensis`). See `.forgejo/workflows/release.yml`.
+The WinMCP agent is built and released from its [own repository](https://pacyworld.dev/winmcp/winmcp).
 
 ## Configuration
 
@@ -145,24 +139,9 @@ Add to your MCP client config (Windsurf, VS Code, Claude Desktop, etc.):
 
 ### WinMCP Agent
 
-**Recommended:** Use the NSIS installer (`winmcp-<version>-setup.exe` from the [releases page](https://pacyworld.dev/pacyworld/vnc-mcp-server/releases)). It handles installation, firewall rules, and startup registration.
+The WinMCP agent is a separate project: **[winmcp/winmcp](https://pacyworld.dev/winmcp/winmcp)**
 
-**Manual usage:**
-
-```
-winmcp.exe                  Run as tray app (default port 9800)
-winmcp.exe -console         Run with console window for debugging
-winmcp.exe -port 9800       Set listen port
-winmcp.exe -password-file P Read auth password from file (instead of registry)
-winmcp.exe install          Add to Windows startup (HKCU\...\Run)
-winmcp.exe uninstall        Remove from Windows startup
-```
-
-**Authentication:** The agent uses VNC DES challenge-response on every TCP connection. It reads the VNC password from the Windows registry (TightVNC, RealVNC, TigerVNC, UltraVNC — checked in order) or from a plaintext file via `-password-file`. The MCP server must have the same password configured via `password_file` in endpoints.json.
-
-**On-screen indicator:** When an MCP client connects, a small translucent overlay pill appears at the top-right corner showing the connection source IP and duration. It's draggable and disappears when disconnected.
-
-**Single-instance:** Only one winmcp.exe process runs at a time (enforced via a named mutex). Launching a second instance silently exits.
+Download the installer from the [WinMCP releases page](https://pacyworld.dev/winmcp/winmcp/releases). See the WinMCP README for installation and configuration.
 
 ## Security
 
@@ -181,21 +160,17 @@ winmcp.exe uninstall        Remove from Windows startup
 - OpenSSL libcrypto (DES for VNC auth)
 - stb_image_write.h (bundled, JPEG encoding)
 
-**WinMCP agent:**
-- No external dependencies (statically linked Win32 API, native COM for UI Automation)
-- Cross-compiled from FreeBSD/Linux with `zig cc`
-
 ## CI/CD
 
 Forgejo Actions workflows on [pacyworld.dev](https://pacyworld.dev/pacyworld/vnc-mcp-server):
 
-- **CI** (`ci.yml`) — builds MCP server and helper on every push to master
-- **Release** (`release.yml`) — on tag push (`v*`): builds binaries, provisions a Linux jail for NSIS, packages the installer, and uploads all three artifacts to a Forgejo release
+- **CI** (`ci.yml`) — builds MCP server on every push to master
+- **Release** (`release.yml`) — on tag push (`v*`): builds the MCP server binary and uploads it to a Forgejo release
 
-Release artifacts:
+Release artifact:
 - `vnc-mcp-server-freebsd-amd64` — MCP server binary
-- `winmcp-windows-amd64.exe` — standalone WinMCP agent binary
-- `winmcp-<version>-setup.exe` — NSIS installer (firewall rule, startup registration)
+
+The WinMCP agent is built and released from its [own repository](https://pacyworld.dev/winmcp/winmcp).
 
 ## License
 
