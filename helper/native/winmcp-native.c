@@ -602,26 +602,11 @@ static int capture_bgra(int req_x, int req_y, int req_w, int req_h,
     if (req_y + req_h > desk_h) req_h = desk_h - req_y;
     if (req_w <= 0 || req_h <= 0) goto cleanup;
 
-    /* Acquire two frames: the first may be a stale accumulated desktop
-     * without recently composited windows (DWM timing). Discard the first
-     * frame and use the second which reflects the current screen state. */
     hr = E_FAIL;
     for (int attempt = 0; attempt < 4; attempt++) {
         hr = IDXGIOutputDuplication_AcquireNextFrame(dupl, 500, &frameInfo, &frameRes);
         if (SUCCEEDED(hr)) break;
         Sleep(50);
-    }
-    if (SUCCEEDED(hr)) {
-        IDXGIOutputDuplication_ReleaseFrame(dupl);
-        IDXGIResource_Release(frameRes);
-        frameRes = NULL;
-        Sleep(100);
-        hr = E_FAIL;
-        for (int attempt = 0; attempt < 4; attempt++) {
-            hr = IDXGIOutputDuplication_AcquireNextFrame(dupl, 500, &frameInfo, &frameRes);
-            if (SUCCEEDED(hr)) break;
-            Sleep(50);
-        }
     }
     if (FAILED(hr)) goto cleanup;
 
