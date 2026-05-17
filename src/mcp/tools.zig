@@ -169,6 +169,10 @@ pub const ResourceContent = struct {
 pub fn readResource(allocator: std.mem.Allocator, uri: []const u8) !ResourceContent {
     // vnc://screenshot or vnc://screenshot/{endpoint}
     if (std.mem.startsWith(u8, uri, "vnc://screenshot")) {
+        // Try agent-first (DXGI)
+        if (tryAgentScreenshotResource(allocator)) |res| return res;
+
+        // Fallback: VNC framebuffer
         const client = try getClient(null); // default endpoint
         const fb = try client.screenshot();
         const jpeg = try image.encodeJpeg(allocator, fb, 90);
@@ -189,6 +193,46 @@ pub fn readResource(allocator: std.mem.Allocator, uri: []const u8) !ResourceCont
     }
 
     return error.ResourceNotFound;
+}
+
+fn tryAgentScreenshotResource(allocator: std.mem.Allocator) ?ResourceContent {
+    const params = std.fmt.allocPrint(allocator, "\"quality\":90", .{}) catch return null;
+    defer allocator.free(params);
+
+    const response = callHelper(allocator, null, "screenshot", params) catch return null;
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{
+        .ignore_unknown_fields = true,
+    }) catch return null;
+    defer parsed.deinit();
+
+    const root = if (parsed.value == .object) parsed.value.object else return null;
+    const status = if (root.get("status")) |s| (if (s == .string) s.string else null) else null;
+    if (status == null or !std.mem.eql(u8, status.?, "ok")) return null;
+
+    const data = if (root.get("data")) |d| (if (d == .object) d.object else null) else null;
+    if (data == null) return null;
+
+    const content_b64_ref = if (data.?.get("content")) |c| (if (c == .string) c.string else null) else null;
+    if (content_b64_ref == null) return null;
+
+    // Copy base64 content out of the parse arena (freed by deferred parsed.deinit)
+    const content_b64 = allocator.dupe(u8, content_b64_ref.?) catch return null;
+
+    var res_w: i64 = if (data.?.get("width")) |w| (if (w == .integer) w.integer else 0) else 0;
+    var res_h: i64 = if (data.?.get("height")) |h| (if (h == .integer) h.integer else 0) else 0;
+
+    if (res_w <= 0 or res_h <= 0) {
+        getScreenDims(allocator, null, &res_w, &res_h);
+    }
+
+    const meta = std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ res_w, res_h }) catch return null;
+
+    return ResourceContent{
+        .blob = content_b64,
+        .mime_type = "image/jpeg",
+        .meta_text = meta,
+    };
 }
 
 /// MCP tool content response helpers
@@ -324,8 +368,6 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
 }
 
 fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
-    const client = try getClient(arguments);
-
     var quality: u8 = 75;
     var delay_ms: u64 = 0;
     if (arguments) |args| {
@@ -344,6 +386,13 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
         std.Thread.sleep(delay_ms * std.time.ns_per_ms);
     }
 
+    // Try agent-first screenshot (DXGI — faster, no VNC protocol overhead)
+    if (tryAgentScreenshot(allocator, arguments, quality)) |result| {
+        return result;
+    }
+
+    // Fallback: VNC framebuffer capture
+    const client = try getClient(arguments);
     const fb = try client.screenshot();
     const jpeg = try image.encodeJpeg(allocator, fb, quality);
     defer allocator.free(jpeg);
@@ -351,6 +400,85 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
     // Include resolution metadata so AI agents can compute coordinates
     const meta = try std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ fb.width, fb.height });
     return imageContentWithMeta(allocator, jpeg, meta);
+}
+
+/// Try to capture a screenshot via the WinMCP agent's native DXGI backend.
+/// Returns null if the agent is unavailable, has no DLL, or the response
+/// can't be parsed — the caller should fall back to VNC framebuffer.
+fn tryAgentScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue, quality: u8) ?JsonValue {
+    const params = std.fmt.allocPrint(allocator, "\"quality\":{d}", .{quality}) catch return null;
+    defer allocator.free(params);
+
+    const response = callHelper(allocator, arguments, "screenshot", params) catch return null;
+    // response is allocator-owned, not freed here (same pattern as other tools)
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{
+        .ignore_unknown_fields = true,
+    }) catch return null;
+    defer parsed.deinit();
+
+    const root = if (parsed.value == .object) parsed.value.object else return null;
+    const status = if (root.get("status")) |s| (if (s == .string) s.string else null) else null;
+    if (status == null or !std.mem.eql(u8, status.?, "ok")) return null;
+
+    const data = if (root.get("data")) |d| (if (d == .object) d.object else null) else null;
+    if (data == null) return null;
+
+    const content_b64_ref = if (data.?.get("content")) |c| (if (c == .string) c.string else null) else null;
+    if (content_b64_ref == null) return null;
+
+    // Copy base64 content out of the parse arena (freed by deferred parsed.deinit)
+    const content_b64 = allocator.dupe(u8, content_b64_ref.?) catch return null;
+
+    // Get resolution from agent response (w/h may be 0 for full-screen)
+    var res_w: i64 = if (data.?.get("width")) |w| (if (w == .integer) w.integer else 0) else 0;
+    var res_h: i64 = if (data.?.get("height")) |h| (if (h == .integer) h.integer else 0) else 0;
+
+    // If agent reported 0×0 (full-screen capture), get actual dims from screen_info
+    if (res_w <= 0 or res_h <= 0) {
+        getScreenDims(allocator, arguments, &res_w, &res_h);
+    }
+
+    // Build MCP image content with pre-encoded base64 JPEG
+    const meta = std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ res_w, res_h }) catch return null;
+
+    var content_arr = std.json.Array.init(allocator);
+
+    var text_item = std.json.ObjectMap.init(allocator);
+    text_item.put("type", JsonValue{ .string = "text" }) catch return null;
+    text_item.put("text", JsonValue{ .string = meta }) catch return null;
+    content_arr.append(JsonValue{ .object = text_item }) catch return null;
+
+    var img_item = std.json.ObjectMap.init(allocator);
+    img_item.put("type", JsonValue{ .string = "image" }) catch return null;
+    img_item.put("data", JsonValue{ .string = content_b64 }) catch return null;
+    img_item.put("mimeType", JsonValue{ .string = "image/jpeg" }) catch return null;
+    content_arr.append(JsonValue{ .object = img_item }) catch return null;
+
+    var result = std.json.ObjectMap.init(allocator);
+    result.put("content", JsonValue{ .array = content_arr }) catch return null;
+    return JsonValue{ .object = result };
+}
+
+/// Extract primary monitor dimensions from screen_info agent response.
+/// Response format: {"status":"ok","data":{"monitors":[{"x":0,"y":0,"w":1918,"h":968,"primary":true}],"dpi":96}}
+fn getScreenDims(allocator: std.mem.Allocator, arguments: ?JsonValue, w: *i64, h: *i64) void {
+    const si_resp = callHelper(allocator, arguments, "screen_info", null) catch return;
+    const si_parsed = std.json.parseFromSlice(std.json.Value, allocator, si_resp, .{
+        .ignore_unknown_fields = true,
+    }) catch return;
+    defer si_parsed.deinit();
+
+    const root = if (si_parsed.value == .object) si_parsed.value.object else return;
+    const data = if (root.get("data")) |d| (if (d == .object) d.object else null) else null;
+    if (data == null) return;
+    const monitors = if (data.?.get("monitors")) |m| (if (m == .array) m.array else null) else null;
+    if (monitors == null or monitors.?.items.len == 0) return;
+
+    // Use primary monitor (first entry)
+    const mon = if (monitors.?.items[0] == .object) monitors.?.items[0].object else return;
+    if (mon.get("w")) |mw| if (mw == .integer) { w.* = mw.integer; };
+    if (mon.get("h")) |mh| if (mh == .integer) { h.* = mh.integer; };
 }
 
 fn toolProbe(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {

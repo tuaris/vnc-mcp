@@ -1,8 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.0] - 2026-05-17
 
 ### Added
+- **Agent-first screenshot (Phase 6)** — `vnc_screenshot` now prefers the WinMCP agent's native DXGI Desktop Duplication capture when available, falling back to VNC framebuffer when the agent is unreachable or has no native DLL. DXGI screenshots are faster (no VNC protocol overhead) and capture the desktop directly. Resolution metadata is obtained from the agent's `screen_info` command when the screenshot returns full-screen dimensions.
 - **Native OCR** — `vnc_ocr_region` now works via the WinMCP agent's native WinRT `Windows.Media.Ocr` implementation. No longer stubbed.
 
 ### Removed
