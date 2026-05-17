@@ -169,10 +169,8 @@ pub const ResourceContent = struct {
 pub fn readResource(allocator: std.mem.Allocator, uri: []const u8) !ResourceContent {
     // vnc://screenshot or vnc://screenshot/{endpoint}
     if (std.mem.startsWith(u8, uri, "vnc://screenshot")) {
-        // Try agent-first (DXGI)
-        if (tryAgentScreenshotResource(allocator)) |res| return res;
-
-        // Fallback: VNC framebuffer
+        // VNC framebuffer (primary — DXGI agent has black-frame bug, disabled)
+        // TODO: re-enable tryAgentScreenshotResource once DXGI black-frame issue is resolved
         const client = try getClient(null); // default endpoint
         const fb = try client.screenshot();
         const jpeg = try image.encodeJpeg(allocator, fb, 90);
@@ -386,12 +384,8 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
         std.Thread.sleep(delay_ms * std.time.ns_per_ms);
     }
 
-    // Try agent-first screenshot (DXGI — faster, no VNC protocol overhead)
-    if (tryAgentScreenshot(allocator, arguments, quality)) |result| {
-        return result;
-    }
-
-    // Fallback: VNC framebuffer capture
+    // VNC framebuffer capture (primary — DXGI agent has black-frame bug, disabled)
+    // TODO: re-enable tryAgentScreenshot once DXGI black-frame issue is resolved
     const client = try getClient(arguments);
     const fb = try client.screenshot();
     const jpeg = try image.encodeJpeg(allocator, fb, quality);
@@ -487,13 +481,20 @@ fn toolProbe(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const x: u16 = @intCast(getInt(args, "x") orelse return error.InvalidArgument);
     const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
 
+    // Cognitive forcing parameters — parsed but not acted on.
+    // Their presence in the schema encourages the agent to validate
+    // that coordinates were derived from a known-resolution image.
+    _ = getBool(args, "used_full_resolution");
+    _ = getString(args, "coordinate_source_resolution");
+    _ = getBool(args, "used_grid");
+
     const client = try getClient(arguments);
     const fb = try client.screenshot();
 
-    const jpeg = try image.encodeJpegWithMarker(allocator, fb, 75, x, y);
+    const jpeg = try image.encodeJpegWithProbe(allocator, fb, 75, x, y);
     defer allocator.free(jpeg);
 
-    const meta = try std.fmt.allocPrint(allocator, "Probe marker at ({d}, {d}) — Resolution: {d}x{d} pixels", .{ x, y, fb.width, fb.height });
+    const meta = try std.fmt.allocPrint(allocator, "Center of probe marker at ({d}, {d}) \u{2014} Resolution: {d}x{d} pixels", .{ x, y, fb.width, fb.height });
     return imageContentWithMeta(allocator, jpeg, meta);
 }
 
@@ -569,11 +570,11 @@ fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const button_str = getString(args, "button") orelse "left";
     const double_click = getBool(args, "double");
 
-    // Cognitive forcing parameters — parsed but not acted on.
+    // Provenance parameters — parsed but not acted on.
     // Their presence in the schema encourages the agent to validate
-    // that coordinates were derived from a known-resolution image.
-    _ = getBool(args, "used_full_resolution");
-    _ = getString(args, "coordinate_source_resolution");
+    // coordinates via probe before committing to a click.
+    _ = getBool(args, "probe_validated");
+    _ = getBool(args, "coordinates_confirmed");
 
     // Try agent-based click (SendInput) first — prefer native input over VNC
     const agent_click = blk: {
@@ -623,7 +624,7 @@ fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     if (jpeg) |j| {
         defer allocator.free(j);
 
-        const click_msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}) — yellow marker shows click location", .{ x, y });
+        const click_msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}) \u{2014} Center of yellow marker shows click location", .{ x, y });
 
         const base64_encoder = std.base64.standard;
         const encoded_len = base64_encoder.Encoder.calcSize(j.len);
@@ -917,7 +918,7 @@ fn toolWindowList(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };
-    return textContent(allocator, response);
+    return textContent(allocator, injectScreenDims(allocator, arguments, response));
 }
 
 fn toolActiveWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
@@ -925,7 +926,25 @@ fn toolActiveWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };
-    return textContent(allocator, response);
+    return textContent(allocator, injectScreenDims(allocator, arguments, response));
+}
+
+/// Inject screen dimensions into a helper JSON response's "data" object.
+/// Transforms {"status":"ok","data":{...}} → {"status":"ok","data":{"screen":{"w":W,"h":H},...}}
+fn injectScreenDims(allocator: std.mem.Allocator, arguments: ?JsonValue, response: []const u8) []const u8 {
+    var sw: i64 = 0;
+    var sh: i64 = 0;
+    getScreenDims(allocator, arguments, &sw, &sh);
+    if (sw <= 0 or sh <= 0) return response;
+
+    // Find "data":{ and inject screen field after the opening brace
+    const needle = "\"data\":{";
+    const pos = std.mem.indexOf(u8, response, needle) orelse return response;
+    const insert_at = pos + needle.len;
+
+    const injection = std.fmt.allocPrint(allocator, "\"screen\":{{\"w\":{d},\"h\":{d}}},", .{ sw, sh }) catch return response;
+    const result = std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ response[0..insert_at], injection, response[insert_at..] }) catch return response;
+    return result;
 }
 
 fn toolSetActiveWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
