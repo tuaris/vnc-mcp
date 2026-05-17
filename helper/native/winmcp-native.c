@@ -671,7 +671,8 @@ cleanup:
  * runs OCR, returns recognized text as UTF-8.
  * ================================================================ */
 
-/* Debug log for OCR troubleshooting */
+/* Debug log for OCR troubleshooting (disabled in release) */
+#if 0
 static FILE *ocr_log = NULL;
 static void ocr_dbg(const char *fmt, ...)
 {
@@ -685,6 +686,9 @@ static void ocr_dbg(const char *fmt, ...)
     fprintf(ocr_log, "\n");
     fflush(ocr_log);
 }
+#else
+#define ocr_dbg(...) ((void)0)
+#endif
 
 /* ================================================================
  * Lazy-loaded WinRT functions (avoid compile-time link dependency
