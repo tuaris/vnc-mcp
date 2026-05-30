@@ -10,9 +10,7 @@ jobs:
     runs-on: FreeBSD
     steps:
       - name: Checkout
-        run: |
-          git clone --depth=1 ${{ github.server_url }}/${{ github.repository }}.git .
-          git checkout ${{ github.sha }}
+        uses: actions/checkout@v4
 
       - name: Build MCP server
         run: zig build -Doptimize=ReleaseSafe
