@@ -268,9 +268,9 @@ pub const McpServer = struct {
 
         // Execute tool with timeout to prevent indefinite IDE hangs (R6).
         // Spawn tool on a worker thread; main thread polls completion with
-        // a 45-second deadline. If the worker hasn't finished, shutdown the
-        // helper socket to unblock any pending recv(), then join the thread.
-        const timeout_ns: u64 = 45 * std.time.ns_per_s;
+        // a deadline. For vnc_run_command, respect its timeout parameter;
+        // for all other tools, use a 60-second default.
+        const timeout_ns: u64 = self.computeToolDeadline(name, arguments);
         const ToolCtx = struct {
             value: ?JsonValue = null,
             err_msg: ?[]const u8 = null,
@@ -301,7 +301,7 @@ pub const McpServer = struct {
         while (!tool_ctx.done.load(.acquire)) {
             if (@as(u64, @intCast(std.time.nanoTimestamp())) >= deadline) {
                 timed_out = true;
-                log.err("tool call '{s}' timed out after 45s — interrupting", .{name});
+                log.err("tool call '{s}' timed out after {d}s — interrupting", .{ name, timeout_ns / std.time.ns_per_s });
 
                 // Shutdown the helper socket to unblock read() in the worker.
                 // This makes stream.read() return 0 (EOF), which triggers
@@ -324,7 +324,8 @@ pub const McpServer = struct {
                 std.Thread.sleep(50 * std.time.ns_per_ms);
             }
             thread.detach(); // Last resort if worker is truly stuck
-            try self.sendToolError(id, "Tool call timed out after 45 seconds");
+            const timeout_msg = std.fmt.allocPrint(self.allocator, "Tool call timed out after {d} seconds", .{timeout_ns / std.time.ns_per_s}) catch "Tool call timed out";
+            try self.sendToolError(id, timeout_msg);
             return;
         }
         thread.join();
@@ -341,12 +342,38 @@ pub const McpServer = struct {
         }
     }
 
+    /// Compute the R6 timeout deadline for a tool call.
+    /// vnc_run_command: respects its "timeout" argument (ms) + 10s margin.
+    /// All other tools: 60s default (enough for SO_RCVTIMEO + error handling).
+    fn computeToolDeadline(self: *McpServer, name: []const u8, arguments: ?JsonValue) u64 {
+        _ = self;
+        if (std.mem.eql(u8, name, "vnc_run_command")) {
+            // arguments is the tool's argument object: {"cmd": "...", "timeout": 90000}
+            if (arguments) |args| {
+                if (args == .object) {
+                    if (args.object.get("timeout")) |t| {
+                        const ms: u64 = switch (t) {
+                            .integer => @intCast(@max(1000, @min(t.integer, 300000))),
+                            .float => @intFromFloat(@max(1000.0, @min(t.float, 300000.0))),
+                            else => 30000,
+                        };
+                        // Tool timeout + 10s margin for connection/processing overhead
+                        return (ms * std.time.ns_per_ms) + (10 * std.time.ns_per_s);
+                    }
+                }
+            }
+            // Default for run_command without explicit timeout: 30s + 10s margin
+            return 40 * std.time.ns_per_s;
+        }
+        // All other tools: 60s (allows 30s SO_RCVTIMEO + error handling)
+        return 60 * std.time.ns_per_s;
+    }
+
     fn handleResourcesList(self: *McpServer, id: ?JsonValue) !void {
         const id_str = try self.formatId(id);
         defer self.allocator.free(id_str);
 
-        const response = try std.fmt.allocPrint(self.allocator,
-            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"resources\":[" ++
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"resources\":[" ++
             "{{\"uri\":\"vnc://screenshot\",\"name\":\"Desktop Screenshot\",\"description\":\"Full-resolution screenshot of the remote desktop. Use this to view the current screen state.\",\"mimeType\":\"image/jpeg\"}}" ++
             "]}}}}", .{id_str});
         defer self.allocator.free(response);
@@ -383,8 +410,7 @@ pub const McpServer = struct {
         defer self.allocator.free(escaped_uri);
 
         // Build response: contents array with one blob entry + text metadata
-        const response = try std.fmt.allocPrint(self.allocator,
-            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"contents\":[" ++
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"contents\":[" ++
             "{{\"uri\":\"{s}\",\"mimeType\":\"{s}\",\"text\":\"{s}\"}}," ++
             "{{\"uri\":\"{s}\",\"mimeType\":\"{s}\",\"blob\":\"{s}\"}}" ++
             "]}}}}", .{ id_str, escaped_uri, "text/plain", resource.meta_text, escaped_uri, resource.mime_type, resource.blob });

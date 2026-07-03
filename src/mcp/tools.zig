@@ -471,8 +471,12 @@ fn getScreenDims(allocator: std.mem.Allocator, arguments: ?JsonValue, w: *i64, h
 
     // Use primary monitor (first entry)
     const mon = if (monitors.?.items[0] == .object) monitors.?.items[0].object else return;
-    if (mon.get("w")) |mw| if (mw == .integer) { w.* = mw.integer; };
-    if (mon.get("h")) |mh| if (mh == .integer) { h.* = mh.integer; };
+    if (mon.get("w")) |mw| if (mw == .integer) {
+        w.* = mw.integer;
+    };
+    if (mon.get("h")) |mh| if (mh == .integer) {
+        h.* = mh.integer;
+    };
 }
 
 fn toolProbe(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
@@ -865,8 +869,13 @@ fn toolPasteText(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue
     return textContent(allocator, "Text pasted");
 }
 
-/// Helper tool: call the WinMCP agent on the endpoint (persistent connection)
+/// Helper tool: call the WinMCP agent on the endpoint (persistent connection).
+/// timeout_secs: override SO_RCVTIMEO for this call (0 = use default 30s).
 fn callHelper(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []const u8, extra_params: ?[]const u8) ![]u8 {
+    return callHelperWithTimeout(allocator, arguments, command, extra_params, 0);
+}
+
+fn callHelperWithTimeout(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []const u8, extra_params: ?[]const u8, timeout_secs: u32) ![]u8 {
     const ep = try getEndpoint(arguments);
     if (ep.helper_port == 0) {
         return error.FramebufferNotReady; // will be caught and shown as error
@@ -894,7 +903,7 @@ fn callHelper(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []co
     }
     defer allocator.free(request);
 
-    return conn.call(request);
+    return conn.callWithTimeout(request, timeout_secs);
 }
 
 fn helperNotConfigured(allocator: std.mem.Allocator) !JsonValue {
@@ -991,6 +1000,7 @@ fn toolSetActiveWindow(allocator: std.mem.Allocator, arguments: ?JsonValue) !Jso
 
     const response = callHelper(allocator, arguments, "set_active_window", extra) catch |err| {
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        if (err == error.ReadTimeout) return textContent(allocator, "No window found for the given criteria (helper timed out). The process may not have a visible top-level window.");
         return helperNotAvailable(allocator);
     };
     return textContent(allocator, response);
@@ -1077,6 +1087,15 @@ fn toolRunCommand(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
     const escaped_cmd = try helper.jsonEscape(allocator, cmd_str);
     defer allocator.free(escaped_cmd);
 
+    // Extract timeout parameter (milliseconds). Default 30000ms.
+    const timeout_ms: u32 = if (getInt(args, "timeout")) |t|
+        @intCast(@max(1000, @min(t, 300000)))
+    else
+        30000;
+
+    // Convert to seconds for SO_RCVTIMEO, add 5s margin for helper overhead
+    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 5;
+
     // Build extra params
     var extra: []u8 = undefined;
     if (getInt(args, "timeout")) |t| {
@@ -1086,8 +1105,13 @@ fn toolRunCommand(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
     }
     defer allocator.free(extra);
 
-    const response = callHelper(allocator, arguments, "run_command", extra) catch |err| {
+    const response = callHelperWithTimeout(allocator, arguments, "run_command", extra, socket_timeout_secs) catch |err| {
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        if (err == error.ReadTimeout) {
+            const msg = std.fmt.allocPrint(allocator, "Command timed out after {d}ms. The command may still be running on the remote machine.", .{timeout_ms}) catch
+                return helperNotAvailable(allocator);
+            return textContent(allocator, msg);
+        }
         return helperNotAvailable(allocator);
     };
     return textContent(allocator, response);

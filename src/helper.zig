@@ -131,7 +131,7 @@ pub const HelperConnection = struct {
             return error.ConnectionFailed;
         };
 
-        // Set read timeout to prevent blocking forever on stale/dead connections
+        // Set a default read timeout — callers can override via setReadTimeout()
         const timeout = std.posix.timeval{ .sec = 30, .usec = 0 };
         std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
 
@@ -146,6 +146,14 @@ pub const HelperConnection = struct {
         log.info("helper connected to {s}:{d}", .{ self.host, self.port });
         self.stream = stream;
         return stream;
+    }
+
+    /// Adjust SO_RCVTIMEO on the live socket. Call after ensureConnected().
+    fn setReadTimeout(self: *HelperConnection, seconds: u32) void {
+        if (self.stream) |s| {
+            const tv = std.posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
+            std.posix.setsockopt(s.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+        }
     }
 
     pub fn disconnect(self: *HelperConnection) void {
@@ -165,15 +173,19 @@ pub const HelperConnection = struct {
     }
 
     /// Read one newline-delimited response from the stream.
+    /// Returns error.ReadTimeout if SO_RCVTIMEO fires (EAGAIN/WouldBlock).
+    /// Returns error.ConnectionFailed for genuine connection loss.
     fn readResponse(self: *HelperConnection, stream: std.net.Stream) ![]u8 {
         var response = std.ArrayList(u8){};
         errdefer response.deinit(self.allocator);
 
         var buf: [8192]u8 = undefined;
         while (true) {
-            const n = stream.read(&buf) catch {
+            const n = stream.read(&buf) catch |err| {
                 self.disconnect();
                 response.deinit(self.allocator);
+                // Distinguish SO_RCVTIMEO timeout from real connection loss
+                if (err == error.WouldBlock) return error.ReadTimeout;
                 return error.ConnectionFailed;
             };
             if (n == 0) {
@@ -210,20 +222,40 @@ pub const HelperConnection = struct {
 
     /// Send a JSON request and return the response. Thread-safe.
     /// On connection failure, retries once with a fresh connection.
+    /// On read timeout (SO_RCVTIMEO), does NOT retry — the helper is busy.
     pub fn call(self: *HelperConnection, request_json: []const u8) ![]u8 {
+        return self.callWithTimeout(request_json, 0);
+    }
+
+    /// Like call(), but temporarily sets SO_RCVTIMEO to `timeout_secs` before reading.
+    /// Pass 0 to use the default (30s set at connection time).
+    pub fn callWithTimeout(self: *HelperConnection, request_json: []const u8, timeout_secs: u32) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         // First attempt: use existing or new connection
-        if (self.sendAndReceive(request_json)) |resp| return resp else |_| {}
+        const first_result = self.sendAndReceive(request_json, timeout_secs);
+        if (first_result) |resp| return resp else |err| {
+            // Never retry on read timeout — the helper is busy processing
+            // the command we just sent. Reconnecting would be counterproductive.
+            if (err == error.ReadTimeout) {
+                log.warn("helper read timeout ({}s) — not retrying", .{if (timeout_secs > 0) timeout_secs else @as(u32, 30)});
+                return error.ReadTimeout;
+            }
+        }
 
-        // Retry once with fresh connection
+        // Retry once with fresh connection (genuine connection loss only)
         self.disconnect();
-        return self.sendAndReceive(request_json);
+        return self.sendAndReceive(request_json, timeout_secs);
     }
 
-    fn sendAndReceive(self: *HelperConnection, request_json: []const u8) ![]u8 {
+    fn sendAndReceive(self: *HelperConnection, request_json: []const u8, timeout_secs: u32) ![]u8 {
         const stream = try self.ensureConnected();
+
+        // Override SO_RCVTIMEO if caller specified a custom timeout
+        if (timeout_secs > 0) {
+            self.setReadTimeout(timeout_secs);
+        }
 
         stream.writeAll(request_json) catch {
             self.disconnect();
@@ -244,4 +276,11 @@ pub fn call(allocator: std.mem.Allocator, host: []const u8, port: u16, password:
     var conn = HelperConnection.init(allocator, host, port, password);
     defer conn.disconnect();
     return conn.call(request_json);
+}
+
+/// Legacy connect-per-request call with custom timeout.
+pub fn callWithTimeout(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8, request_json: []const u8, timeout_secs: u32) ![]u8 {
+    var conn = HelperConnection.init(allocator, host, port, password);
+    defer conn.disconnect();
+    return conn.callWithTimeout(request_json, timeout_secs);
 }
