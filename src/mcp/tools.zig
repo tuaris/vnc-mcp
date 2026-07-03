@@ -308,6 +308,8 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolMoveMouse(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_drag")) {
         return toolDrag(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_scroll")) {
+        return toolScroll(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_clipboard_set")) {
         return toolClipboardSet(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_paste_text")) {
@@ -833,6 +835,38 @@ fn toolDrag(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     }
 
     return textContent(allocator, "Drag completed");
+}
+
+fn toolScroll(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    const x: u16 = @intCast(getInt(args, "x") orelse return error.InvalidArgument);
+    const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
+    const amount = getInt(args, "amount") orelse return error.InvalidArgument;
+
+    if (amount == 0) return textContent(allocator, "No scroll (amount=0)");
+
+    const client = try getClient(arguments);
+
+    // RFB button mask: bit 3 (value 8) = wheel up, bit 4 (value 16) = wheel down
+    const button_mask: u8 = if (amount > 0) 8 else 16;
+    const notches: usize = @intCast(if (amount > 0) amount else -amount);
+
+    // Send one press+release per notch, with small delays between
+    for (0..notches) |_| {
+        try client.sendPointerEvent(x, y, button_mask);
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+        try client.sendPointerEvent(x, y, 0);
+        std.Thread.sleep(30 * std.time.ns_per_ms);
+    }
+
+    const msg = try std.fmt.allocPrint(allocator, "Scrolled {s} {d} notch(es) at ({d},{d})", .{
+        if (amount > 0) @as([]const u8, "up") else @as([]const u8, "down"),
+        notches,
+        x,
+        y,
+    });
+    return textContent(allocator, msg);
 }
 
 fn toolClipboardSet(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
