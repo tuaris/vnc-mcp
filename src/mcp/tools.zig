@@ -80,7 +80,7 @@ pub const HelperPool = struct {
     pub fn deinit(self: *HelperPool) void {
         var it = self.entries.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.disconnect();
+            entry.value_ptr.deinit();
         }
         self.entries.deinit();
     }
@@ -88,7 +88,7 @@ pub const HelperPool = struct {
     pub fn getOrCreate(self: *HelperPool, ep: *const registry_mod.Endpoint, password: ?[]const u8) !*helper.HelperConnection {
         if (self.entries.getPtr(ep.id)) |conn| return conn;
 
-        const conn = helper.HelperConnection.init(self.allocator, ep.host, ep.helper_port, password);
+        const conn = try helper.HelperConnection.init(self.allocator, ep.host, ep.helper_port, password);
         try self.entries.put(ep.id, conn);
         return self.entries.getPtr(ep.id).?;
     }

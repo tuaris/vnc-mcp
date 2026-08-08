@@ -80,13 +80,25 @@ pub const HelperConnection = struct {
     stream: ?std.net.Stream = null,
     mutex: std.Thread.Mutex = .{},
 
-    pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8) HelperConnection {
+    /// The password is duplicated — the connection owns its copy so that
+    /// re-authentication after an idle drop never touches caller memory
+    /// (callers free their copy when the tool call returns).
+    pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8) !HelperConnection {
         return .{
             .allocator = allocator,
             .host = host,
             .port = port,
-            .password = password,
+            .password = if (password) |pw| try allocator.dupe(u8, pw) else null,
         };
+    }
+
+    /// Close the stream and free the owned password copy.
+    pub fn deinit(self: *HelperConnection) void {
+        self.disconnect();
+        if (self.password) |pw| {
+            self.allocator.free(pw);
+            self.password = null;
+        }
     }
 
     /// Check if a socket is still alive using kqueue (event-driven, instant).
@@ -273,14 +285,14 @@ pub const HelperConnection = struct {
 /// Legacy connect-per-request call (convenience wrapper).
 /// Creates a temporary connection, sends one request, returns the response.
 pub fn call(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8, request_json: []const u8) ![]u8 {
-    var conn = HelperConnection.init(allocator, host, port, password);
-    defer conn.disconnect();
+    var conn = try HelperConnection.init(allocator, host, port, password);
+    defer conn.deinit();
     return conn.call(request_json);
 }
 
 /// Legacy connect-per-request call with custom timeout.
 pub fn callWithTimeout(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8, request_json: []const u8, timeout_secs: u32) ![]u8 {
-    var conn = HelperConnection.init(allocator, host, port, password);
-    defer conn.disconnect();
+    var conn = try HelperConnection.init(allocator, host, port, password);
+    defer conn.deinit();
     return conn.callWithTimeout(request_json, timeout_secs);
 }

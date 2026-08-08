@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.1] - 2026-08-08
+
+### Fixed
+- **Server crash on helper re-authentication (#20)** — `HelperConnection` stored the caller's password slice by reference while `callHelperWithTimeout` freed it on return; re-authenticating after an idle-dropped helper connection read freed memory and segfaulted (`VncAuth.encrypt` `@memcpy`), killing the server (`transport error: transport closed` client-side). `HelperConnection` now owns a duped copy, freed by a new `deinit()`.
+
 ## [0.7.0] - 2026-05-17
 
 ### Added
