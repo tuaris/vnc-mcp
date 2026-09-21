@@ -6,7 +6,8 @@ Built in **Zig**. The MCP server runs on FreeBSD or Linux and communicates with 
 
 ## Features
 
-- **34 MCP tools** — screen capture, mouse/keyboard input, clipboard, file transfer, UI automation, window management, process/service management, registry, command execution
+- **36 MCP tools** — screen capture, mouse/keyboard input, clipboard, file transfer, UI automation, window management, process/service management, registry, command execution
+- **Coordinate calibration** — `vnc_calibrate` measures how your IDE displays screenshots (scaled/cropped) once, saves the transform per (client, endpoint, resolution), and `coordinate_space="calibrated"` then lets you read click coordinates straight off returned images
 - **Visual click confirmation** — clicks return a screenshot with a yellow marker ring at the exact click point
 - **Coordinate grid** — `vnc_grid` overlays a labeled grid (A1–P12) and returns center coordinates for every cell
 - **Coordinate verification** — `vnc_probe` places a marker on a screenshot without interacting with the desktop
@@ -34,6 +35,17 @@ Built in **Zig**. The MCP server runs on FreeBSD or Linux and communicates with 
 | `vnc_clipboard_get` | Read the last clipboard text received from the remote desktop via VNC ServerCutText. |
 | `vnc_paste_text` | Set clipboard + Ctrl+V — reliable text entry for URLs and special characters. |
 | `vnc_list_endpoints` | List registered VNC endpoints with connection status. |
+| `vnc_calibrate` | One-time per (client, endpoint, resolution): place numbered markers, report where they appear in your view, save the pixel transform to disk. |
+
+### Coordinate calibration
+
+IDEs downscale screenshot images, so coordinates estimated from them land far from the real framebuffer pixel. `vnc_calibrate` fixes this empirically:
+
+1. `action="start"` — places 9 numbered markers at known framebuffer positions and returns an annotated screenshot.
+2. Report where each marker's magenta dot appears **in the image as displayed to you**: `action="submit"` with `samples:[{"id":"M1","x":..,"y":..}, ...]`.
+3. The server solves fb = a·obs + b per axis (RMSE reported; >4px spawns a refine round with extra markers) and `action="commit"` saves the record to `~/.config/vnc-mcp/calibration.json`.
+
+Records are keyed `sha256(clientInfo.name | endpoint_id | WxH)` — stable across sessions and client updates (version is never hashed). Then pass `coordinate_space="calibrated"` on the coordinate tools (`vnc_click`, `vnc_drag`, `vnc_move_mouse`, `vnc_scroll`, `vnc_probe`) and copy target coordinates straight off the images you see. Every spatial tool response carries a `Calibration:` status line for the endpoint you are using.
 
 ### Helper Tools (require WinMCP agent on target)
 

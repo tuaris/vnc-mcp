@@ -4,6 +4,7 @@ const keysym = @import("../rfb/keysym.zig");
 const registry_mod = @import("../registry.zig");
 const image = @import("../image.zig");
 const helper = @import("../helper.zig");
+const cal = @import("../calibration.zig");
 
 const log = std.log.scoped(.tools);
 const JsonValue = std.json.Value;
@@ -362,6 +363,8 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolListServices(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_service_control")) {
         return toolServiceControl(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_calibrate")) {
+        return toolCalibrate(allocator, arguments);
     } else {
         return textContent(allocator, "Unknown tool");
     }
@@ -393,8 +396,12 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
     const jpeg = try image.encodeJpeg(allocator, fb, quality);
     defer allocator.free(jpeg);
 
-    // Include resolution metadata so AI agents can compute coordinates
-    const meta = try std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ fb.width, fb.height });
+    // Include resolution metadata so AI agents can compute coordinates,
+    // plus this client's calibration state for this endpoint/resolution.
+    const ep = try getEndpoint(arguments);
+    const status = cal.statusLine(allocator, ep.id, fb.width, fb.height);
+    defer allocator.free(status);
+    const meta = try std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels\n{s}", .{ fb.width, fb.height, status });
     return imageContentWithMeta(allocator, jpeg, meta);
 }
 
@@ -484,8 +491,8 @@ fn getScreenDims(allocator: std.mem.Allocator, arguments: ?JsonValue, w: *i64, h
 fn toolProbe(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
 
-    const x: u16 = @intCast(getInt(args, "x") orelse return error.InvalidArgument);
-    const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
+    const x_in: i64 = getInt(args, "x") orelse return error.InvalidArgument;
+    const y_in: i64 = getInt(args, "y") orelse return error.InvalidArgument;
 
     // Cognitive forcing parameters — parsed but not acted on.
     // Their presence in the schema encourages the agent to validate
@@ -494,13 +501,24 @@ fn toolProbe(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     _ = getString(args, "coordinate_source_resolution");
     _ = getBool(args, "used_grid");
 
+    const resolved = try resolveCoords(allocator, args, arguments, x_in, y_in);
+    if (std.mem.startsWith(u8, resolved.note, "ERROR")) return textContent(allocator, resolved.note);
+    const x = resolved.x;
+    const y = resolved.y;
+
     const client = try getClient(arguments);
     const fb = try client.screenshot();
 
     const jpeg = try image.encodeJpegWithProbe(allocator, fb, 75, x, y);
     defer allocator.free(jpeg);
 
-    const meta = try std.fmt.allocPrint(allocator, "Center of probe marker at ({d}, {d}) \u{2014} Resolution: {d}x{d} pixels", .{ x, y, fb.width, fb.height });
+    const ep = try getEndpoint(arguments);
+    const status = cal.statusLine(allocator, ep.id, fb.width, fb.height);
+    defer allocator.free(status);
+    const meta = try std.fmt.allocPrint(allocator, "Center of probe marker at ({d}, {d}) \u{2014} Resolution: {d}x{d} pixels{s}{s}\n{s}", .{
+        x,                                                                         y,             fb.width, fb.height,
+        if (resolved.note.len > 0) @as([]const u8, "\n") else @as([]const u8, ""), resolved.note, status,
+    });
     return imageContentWithMeta(allocator, jpeg, meta);
 }
 
@@ -563,6 +581,11 @@ fn toolGrid(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
         try meta_buf.append(allocator, '\n');
     }
 
+    const ep = try getEndpoint(arguments);
+    const status = cal.statusLine(allocator, ep.id, fb.width, fb.height);
+    defer allocator.free(status);
+    try meta_buf.appendSlice(allocator, status);
+
     const meta = try allocator.dupe(u8, meta_buf.items);
     return imageContentWithMeta(allocator, jpeg, meta);
 }
@@ -570,8 +593,13 @@ fn toolGrid(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
 fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
 
-    const x: u16 = @intCast(getInt(args, "x") orelse return error.InvalidArgument);
-    const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
+    const x_in: i64 = getInt(args, "x") orelse return error.InvalidArgument;
+    const y_in: i64 = getInt(args, "y") orelse return error.InvalidArgument;
+
+    const resolved = try resolveCoords(allocator, args, arguments, x_in, y_in);
+    if (std.mem.startsWith(u8, resolved.note, "ERROR")) return textContent(allocator, resolved.note);
+    const x: u16 = resolved.x;
+    const y: u16 = resolved.y;
 
     const button_str = getString(args, "button") orelse "left";
     const double_click = getBool(args, "double");
@@ -630,7 +658,19 @@ fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     if (jpeg) |j| {
         defer allocator.free(j);
 
-        const click_msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}) \u{2014} Center of yellow marker shows click location", .{ x, y });
+        const ep = try getEndpoint(arguments);
+        const click_msg = if (fb) |c| blk: {
+            const status = cal.statusLine(allocator, ep.id, c.width, c.height);
+            defer allocator.free(status);
+            break :blk try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}) \u{2014} Center of yellow marker shows click location{s}{s}\n{s}", .{
+                x,                                                                         y,
+                if (resolved.note.len > 0) @as([]const u8, "\n") else @as([]const u8, ""), resolved.note,
+                status,
+            });
+        } else try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}) \u{2014} Center of yellow marker shows click location{s}{s}", .{
+            x,                                                                         y,
+            if (resolved.note.len > 0) @as([]const u8, "\n") else @as([]const u8, ""), resolved.note,
+        });
 
         const base64_encoder = std.base64.standard;
         const encoded_len = base64_encoder.Encoder.calcSize(j.len);
@@ -655,7 +695,10 @@ fn toolClick(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
         return JsonValue{ .object = result };
     }
 
-    const msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d})", .{ x, y });
+    const msg = try std.fmt.allocPrint(allocator, "Clicked at ({d}, {d}){s}{s}", .{
+        x,                                                                         y,
+        if (resolved.note.len > 0) @as([]const u8, "\n") else @as([]const u8, ""), resolved.note,
+    });
     return textContent(allocator, msg);
 }
 
@@ -775,8 +818,13 @@ fn toolKeyPress(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue 
 fn toolMoveMouse(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
 
-    const x: u16 = @intCast(getInt(args, "x") orelse return error.InvalidArgument);
-    const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
+    const x_in: i64 = getInt(args, "x") orelse return error.InvalidArgument;
+    const y_in: i64 = getInt(args, "y") orelse return error.InvalidArgument;
+
+    const resolved = try resolveCoords(allocator, args, arguments, x_in, y_in);
+    if (std.mem.startsWith(u8, resolved.note, "ERROR")) return textContent(allocator, resolved.note);
+    const x: u16 = resolved.x;
+    const y: u16 = resolved.y;
 
     // Try agent-based mouse move (SetCursorPos) first
     const agent_moved = blk: {
@@ -792,16 +840,28 @@ fn toolMoveMouse(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue
         try client.sendPointerEvent(x, y, 0);
     }
 
-    return textContent(allocator, "Mouse moved");
+    const msg = try std.fmt.allocPrint(allocator, "Mouse moved to ({d},{d}){s}{s}", .{
+        x,                                                                         y,
+        if (resolved.note.len > 0) @as([]const u8, "\n") else @as([]const u8, ""), resolved.note,
+    });
+    return textContent(allocator, msg);
 }
 
 fn toolDrag(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
 
-    const x1: u16 = @intCast(getInt(args, "x1") orelse return error.InvalidArgument);
-    const y1: u16 = @intCast(getInt(args, "y1") orelse return error.InvalidArgument);
-    const x2: u16 = @intCast(getInt(args, "x2") orelse return error.InvalidArgument);
-    const y2: u16 = @intCast(getInt(args, "y2") orelse return error.InvalidArgument);
+    const x1_in: i64 = getInt(args, "x1") orelse return error.InvalidArgument;
+    const y1_in: i64 = getInt(args, "y1") orelse return error.InvalidArgument;
+    const x2_in: i64 = getInt(args, "x2") orelse return error.InvalidArgument;
+    const y2_in: i64 = getInt(args, "y2") orelse return error.InvalidArgument;
+
+    const from = try resolveCoords(allocator, args, arguments, x1_in, y1_in);
+    if (std.mem.startsWith(u8, from.note, "ERROR")) return textContent(allocator, from.note);
+    const to = try resolveCoords(allocator, args, arguments, x2_in, y2_in);
+    const x1: u16 = from.x;
+    const y1: u16 = from.y;
+    const x2: u16 = to.x;
+    const y2: u16 = to.y;
 
     // Try agent-based drag (SendInput) first
     const agent_dragged = blk: {
@@ -834,15 +894,25 @@ fn toolDrag(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
         try client.sendPointerEvent(x2, y2, 0);
     }
 
-    return textContent(allocator, "Drag completed");
+    const drag_note: []const u8 = if (from.note.len > 0 or to.note.len > 0)
+        try std.fmt.allocPrint(allocator, "\n{s} -> {s}", .{ from.note, to.note })
+    else
+        "";
+    const msg = try std.fmt.allocPrint(allocator, "Drag completed ({d},{d}) -> ({d},{d}){s}", .{ x1, y1, x2, y2, drag_note });
+    return textContent(allocator, msg);
 }
 
 fn toolScroll(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
 
-    const x: u16 = @intCast(getInt(args, "x") orelse return error.InvalidArgument);
-    const y: u16 = @intCast(getInt(args, "y") orelse return error.InvalidArgument);
+    const x_in: i64 = getInt(args, "x") orelse return error.InvalidArgument;
+    const y_in: i64 = getInt(args, "y") orelse return error.InvalidArgument;
     const amount = getInt(args, "amount") orelse return error.InvalidArgument;
+
+    const resolved = try resolveCoords(allocator, args, arguments, x_in, y_in);
+    if (std.mem.startsWith(u8, resolved.note, "ERROR")) return textContent(allocator, resolved.note);
+    const x: u16 = resolved.x;
+    const y: u16 = resolved.y;
 
     if (amount == 0) return textContent(allocator, "No scroll (amount=0)");
 
@@ -860,11 +930,13 @@ fn toolScroll(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
         std.Thread.sleep(30 * std.time.ns_per_ms);
     }
 
-    const msg = try std.fmt.allocPrint(allocator, "Scrolled {s} {d} notch(es) at ({d},{d})", .{
+    const msg = try std.fmt.allocPrint(allocator, "Scrolled {s} {d} notch(es) at ({d},{d}){s}{s}", .{
         if (amount > 0) @as([]const u8, "up") else @as([]const u8, "down"),
         notches,
         x,
         y,
+        if (resolved.note.len > 0) @as([]const u8, "\n") else @as([]const u8, ""),
+        resolved.note,
     });
     return textContent(allocator, msg);
 }
@@ -1623,4 +1695,546 @@ fn toolServiceControl(allocator: std.mem.Allocator, arguments: ?JsonValue) !Json
         return helperNotAvailable(allocator);
     };
     return textContent(allocator, response);
+}
+
+// ===================================================================
+// Coordinate calibration
+// ===================================================================
+
+fn getFloat(obj: std.json.ObjectMap, key: []const u8) ?f64 {
+    if (obj.get(key)) |val| {
+        return switch (val) {
+            .integer => @floatFromInt(val.integer),
+            .float => val.float,
+            else => null,
+        };
+    }
+    return null;
+}
+
+/// Current framebuffer dimensions for the endpoint in these arguments.
+/// Handshake dimensions are available right after connect — no screenshot needed.
+fn currentDims(arguments: ?JsonValue) !struct { w: u16, h: u16 } {
+    const ep = try getEndpoint(arguments);
+    const pool = connections orelse return error.ConnectionFailed;
+    const client = try pool.getOrConnect(ep);
+    return .{ .w = client.width, .h = client.height };
+}
+
+const ResolvedCoords = struct { x: u16, y: u16, note: []const u8 };
+
+/// Map tool-call coordinates into framebuffer pixels.
+/// coordinate_space="framebuffer" (default): pass through, unchanged behavior.
+/// coordinate_space="calibrated": apply the stored transform for
+/// (client_id, endpoint, current resolution). Missing/generic-identity or a
+/// resolution-mismatched record is a hard error text — never a wrong click.
+fn resolveCoords(allocator: std.mem.Allocator, args: std.json.ObjectMap, arguments: ?JsonValue, x_in: i64, y_in: i64) !ResolvedCoords {
+    const space = getString(args, "coordinate_space") orelse "framebuffer";
+    if (std.mem.eql(u8, space, "framebuffer")) {
+        return .{
+            .x = @intCast(std.math.clamp(x_in, 0, 65535)),
+            .y = @intCast(std.math.clamp(y_in, 0, 65535)),
+            .note = "",
+        };
+    }
+    if (!std.mem.eql(u8, space, "calibrated")) {
+        return .{ .x = 0, .y = 0, .note = try allocator.dupe(u8, "ERROR: unknown coordinate_space (use \"framebuffer\" or \"calibrated\") — NO ACTION WAS TAKEN.") };
+    }
+
+    const cid_opt = try cal.clientId(allocator);
+    const cid = cid_opt orelse {
+        return .{ .x = 0, .y = 0, .note = try allocator.dupe(u8, "ERROR: coordinate_space=calibrated but your MCP client did not identify itself (no clientInfo.name in initialize). Calibration is per-agent identity — NO ACTION WAS TAKEN.") };
+    };
+    defer allocator.free(cid);
+    if (!cal.isUsableClient(cid)) {
+        const note = try std.fmt.allocPrint(allocator, "ERROR: coordinate_space=calibrated but client identity '{s}' is generic — calibrations must be keyed to a real agent identity. NO ACTION WAS TAKEN.", .{cid});
+        return .{ .x = 0, .y = 0, .note = note };
+    }
+
+    const ep = try getEndpoint(arguments);
+    const dims = try currentDims(arguments);
+
+    var store = try cal.load(allocator);
+    defer store.deinit();
+
+    const rec = store.find(cid, ep.id, dims.w, dims.h) orelse {
+        if (store.findAnyForEndpoint(cid, ep.id)) |stale| {
+            const note = try std.fmt.allocPrint(allocator, "ERROR: calibration for endpoint {s} is STALE — saved at {d}x{d}, current framebuffer is {d}x{d}. Run vnc_calibrate again. NO ACTION WAS TAKEN.", .{ ep.id, stale.width, stale.height, dims.w, dims.h });
+            return .{ .x = 0, .y = 0, .note = note };
+        }
+        const note = try std.fmt.allocPrint(allocator, "ERROR: no calibration for ({s}, {s}, {d}x{d}). Clicks are inaccurate until calibrated — run vnc_calibrate (action=start) first. NO ACTION WAS TAKEN.", .{ cid, ep.id, dims.w, dims.h });
+        return .{ .x = 0, .y = 0, .note = note };
+    };
+
+    const record = cal.Record{
+        .client_id = rec.client_id,
+        .client_name = rec.client_name,
+        .client_version = rec.client_version,
+        .endpoint_id = rec.endpoint_id,
+        .width = rec.width,
+        .height = rec.height,
+        .x_a = rec.x_a,
+        .x_b = rec.x_b,
+        .y_a = rec.y_a,
+        .y_b = rec.y_b,
+        .rmse = rec.rmse,
+        .rounds = rec.rounds,
+        .created_at = rec.created_at,
+        .updated_at = rec.updated_at,
+    };
+    const fb = record.toFb(@floatFromInt(x_in), @floatFromInt(y_in));
+    const note = try std.fmt.allocPrint(allocator, "(input ({d},{d}) mapped to framebuffer ({d},{d}); calibration rmse {d:.1}px)", .{ x_in, y_in, fb.x, fb.y, rec.rmse });
+    return .{ .x = fb.x, .y = fb.y, .note = note };
+}
+
+/// Combine a tool note (from resolveCoords or "") with the calibration status
+/// line for the endpoint/resolution that applies to this response.
+fn withCalibrationStatus(allocator: std.mem.Allocator, arguments: ?JsonValue, base_text: []const u8, width: u16, height: u16) []const u8 {
+    const ep = getEndpoint(arguments) catch return base_text;
+    const status = cal.statusLine(allocator, ep.id, width, height);
+    defer if (!std.mem.eql(u8, status.ptr, base_text.ptr) or true) allocator.free(status);
+    const merged = std.fmt.allocPrint(allocator, "{s}\n{s}", .{ base_text, status }) catch return base_text;
+    return merged;
+}
+
+/// Per-client calibration clause appended to spatial tool descriptions.
+/// Returns "" when no tailoring applies.
+fn calibrationClause(allocator: std.mem.Allocator) ![]u8 {
+    const cid_opt = try cal.clientId(allocator);
+    const cid = cid_opt orelse
+        return allocator.dupe(u8, "CALIBRATION: this client sent no identity (clientInfo.name) — calibrated coordinate mapping is unavailable; coordinates must be framebuffer pixels computed from the Resolution metadata.");
+    defer allocator.free(cid);
+
+    if (!cal.isUsableClient(cid)) {
+        return std.fmt.allocPrint(allocator, "CALIBRATION: disabled — client identity '{s}' is too generic to key a saved calibration.", .{cid});
+    }
+
+    var store = cal.load(allocator) catch
+        return allocator.dupe(u8, "CALIBRATION: state unknown (calibration.json unreadable); treat coordinates as framebuffer pixels.");
+    defer store.deinit();
+
+    if (store.findAnyForClient(cid)) |_| {
+        return allocator.dupe(u8, "CALIBRATION: you have saved calibration record(s). For coordinate targeting pass coordinate_space=\"calibrated\" and read positions directly from returned images — no manual scaling. Records are per (client, endpoint, resolution); every spatial tool response carries a 'Calibration:' status line — honor it.");
+    }
+    return allocator.dupe(u8, "CALIBRATION: NOT CALIBRATED. Image-space coordinate estimates ARE INACCURATE — either run vnc_calibrate (one-time per client/endpoint/resolution) or compute framebuffer coordinates from the Resolution metadata.");
+}
+
+/// Append the calibration state clause to spatial tool descriptions.
+/// Called by the server on every tools/list; mutates the parsed schema value.
+pub fn tailorDescriptions(allocator: std.mem.Allocator, root: *std.json.Value) !void {
+    const clause = calibrationClause(allocator) catch return;
+    defer allocator.free(clause);
+    if (clause.len == 0) {
+        allocator.free(clause);
+        return;
+    }
+
+    if (root.* != .array) return;
+    for (root.array.items) |*tv| {
+        if (tv.* != .object) continue;
+        const name_v = tv.object.get("name") orelse continue;
+        if (name_v != .string) continue;
+        if (!std.mem.startsWith(u8, name_v.string, "vnc_screenshot") and
+            !std.mem.eql(u8, name_v.string, "vnc_probe") and
+            !std.mem.eql(u8, name_v.string, "vnc_grid") and
+            !std.mem.eql(u8, name_v.string, "vnc_click") and
+            !std.mem.eql(u8, name_v.string, "vnc_drag") and
+            !std.mem.eql(u8, name_v.string, "vnc_move_mouse") and
+            !std.mem.eql(u8, name_v.string, "vnc_scroll")) continue;
+
+        const desc_v = tv.object.get("description") orelse continue;
+        if (desc_v != .string) continue;
+        const merged = std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ desc_v.string, clause }) catch continue;
+        try tv.object.put("description", .{ .string = merged });
+    }
+}
+
+// ---- vnc_calibrate tool ----
+
+const rmse_accept_px: f64 = 4.0;
+const max_rounds: u32 = 5;
+
+const CalMarker = struct {
+    id: []u8,
+    fb_x: u16,
+    fb_y: u16,
+    obs_x: ?f64 = null,
+    obs_y: ?f64 = null,
+};
+
+const PendingCal = struct {
+    endpoint_id: []u8,
+    width: u16,
+    height: u16,
+    rounds: u32,
+    markers: []CalMarker,
+    solution: ?cal.Solution = null,
+};
+
+var pending_cal: ?PendingCal = null;
+
+fn calResetPendingP() void {
+    if (pending_cal) |*p| {
+        global_allocator.free(p.endpoint_id);
+        for (p.markers) |m| global_allocator.free(m.id);
+        global_allocator.free(p.markers);
+        if (p.solution) |*s| global_allocator.free(s.residuals);
+        pending_cal = null;
+    }
+}
+
+fn toolCalibrate(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const action = getString(args, "action") orelse
+        return textContent(allocator, "ERROR: 'action' is required: start | submit | commit | status | clear");
+
+    if (std.mem.eql(u8, action, "start")) return calActionStart(allocator, arguments, args);
+    if (std.mem.eql(u8, action, "submit")) return calActionSubmit(allocator, arguments, args);
+    if (std.mem.eql(u8, action, "commit")) return calActionCommit(allocator, arguments);
+    if (std.mem.eql(u8, action, "status")) return calActionStatus(allocator, arguments);
+    if (std.mem.eql(u8, action, "clear")) return calActionClear(allocator, arguments);
+    return textContent(allocator, "ERROR: unknown action (use start | submit | commit | status | clear)");
+}
+
+fn calActionStart(allocator: std.mem.Allocator, arguments: ?JsonValue, args: std.json.ObjectMap) !JsonValue {
+    _ = args;
+    const ep = try getEndpoint(arguments);
+    const client = try getClient(arguments);
+
+    calResetPendingP();
+
+    var markers = try global_allocator.alloc(CalMarker, 9);
+    var labeled = try allocator.alloc(image.LabeledMarker, 9);
+    defer allocator.free(labeled);
+    var meta_lines = std.ArrayList(u8){};
+    defer meta_lines.deinit(allocator);
+
+    const fracs = [_]f64{ 0.125, 0.5, 0.875 };
+    var n: usize = 0;
+    for (fracs) |fy| {
+        for (fracs) |fx| {
+            const mx: u16 = @intFromFloat(@round(fx * @as(f64, @floatFromInt(client.width))));
+            const my: u16 = @intFromFloat(@round(fy * @as(f64, @floatFromInt(client.height))));
+            const id = try std.fmt.allocPrint(global_allocator, "M{d}", .{n + 1});
+            markers[n] = .{ .id = id, .fb_x = mx, .fb_y = my };
+            labeled[n] = .{ .label = id, .x = mx, .y = my };
+            const line = try std.fmt.allocPrint(allocator, "{s}=({d},{d}) ", .{ id, mx, my });
+            defer allocator.free(line);
+            try meta_lines.appendSlice(allocator, line);
+            n += 1;
+        }
+    }
+
+    pending_cal = .{
+        .endpoint_id = try global_allocator.dupe(u8, ep.id),
+        .width = client.width,
+        .height = client.height,
+        .rounds = 1,
+        .markers = markers,
+    };
+
+    const fb = try client.screenshot();
+    const jpeg = try image.encodeJpegWithLabeledMarkers(allocator, fb, 75, labeled);
+    defer allocator.free(jpeg);
+
+    const meta = try std.fmt.allocPrint(allocator, "Calibration round 1 — 9 numbered markers placed on endpoint {s} ({d}x{d} framebuffer).\nMarker framebuffer positions: {s}\nResolution: {d}x{d} pixels\n\nFor EACH numbered marker, report the position of its MAGENTA CENTER DOT as it appears to you in this displayed image (the image may be scaled/cropped on your side — use the coordinate system of this image exactly as you see it, fractional pixels are fine).\nThen call vnc_calibrate action=\"submit\" with: {{\"samples\":[{{\"id\":\"M1\",\"x\":12.5,\"y\":34}}, ...]}}.", .{ ep.id, client.width, client.height, meta_lines.items, client.width, client.height });
+    return imageContentWithMeta(allocator, jpeg, meta);
+}
+
+fn calActionSubmit(allocator: std.mem.Allocator, arguments: ?JsonValue, args: std.json.ObjectMap) !JsonValue {
+    if (pending_cal == null) {
+        return textContent(allocator, "ERROR: no calibration round in progress — call action=\"start\" first.");
+    }
+    const p = &pending_cal.?;
+
+    const ep = try getEndpoint(arguments);
+
+    // Parse and merge samples (same id replaces; new ids must match round markers)
+    const samples_v = args.get("samples");
+    if (samples_v == null or samples_v.? != .array or samples_v.?.array.items.len == 0) {
+        return textContent(allocator, "ERROR: 'samples' array required: [{\"id\":\"M1\",\"x\":12.5,\"y\":34}, ...]");
+    }
+    var referenced: usize = 0;
+    for (samples_v.?.array.items) |sv| {
+        if (sv != .object) continue;
+        const id_s = getString(sv.object, "id") orelse continue;
+        const ox = getFloat(sv.object, "x") orelse continue;
+        const oy = getFloat(sv.object, "y") orelse continue;
+        for (p.markers) |*m| {
+            if (std.mem.eql(u8, m.id, id_s)) {
+                m.obs_x = ox;
+                m.obs_y = oy;
+                referenced += 1;
+                break;
+            }
+        }
+    }
+    if (referenced == 0) {
+        return textContent(allocator, "ERROR: none of the sample ids match pending markers — check ids from the last start/refine image.");
+    }
+
+    // Collect observed markers
+    var sample_list = std.ArrayList(cal.Sample){};
+    defer sample_list.deinit(allocator);
+    for (p.markers) |m| {
+        if (m.obs_x) |ox| {
+            if (m.obs_y) |oy| {
+                try sample_list.append(allocator, .{ .id = m.id, .fb_x = @floatFromInt(m.fb_x), .fb_y = @floatFromInt(m.fb_y), .obs_x = ox, .obs_y = oy });
+            }
+        }
+    }
+    if (sample_list.items.len < 2) {
+        const msg = try std.fmt.allocPrint(allocator, "ERROR: only {d} observed sample(s) — at least 2 needed. Measure more markers and submit again.", .{sample_list.items.len});
+        return textContent(allocator, msg);
+    }
+
+    const sol = (try cal.solve(allocator, sample_list.items)) orelse {
+        return textContent(allocator, "ERROR: observations are degenerate (identical positions) — cannot solve a transform. Re-check the marker positions you reported.");
+    };
+
+    if (sol.rmse > rmse_accept_px and p.rounds < max_rounds) {
+        allocator.free(sol.residuals); // refine round re-solves next submit
+
+        // Place additional markers near the worst residual points
+        const worst = worstResidualMarkers(p.markers, sample_list.items, sol, allocator) catch
+            return textContent(allocator, "ERROR: internal error building refine round");
+        defer allocator.free(worst);
+
+        var new_markers = std.ArrayList(CalMarker){};
+        var id_num: usize = p.markers.len;
+        for (worst) |wm| {
+            const offsets = [3][2]i32{ .{ 64, 48 }, .{ -64, 48 }, .{ 0, -80 } };
+            for (offsets) |off| {
+                const nx_i = std.math.clamp(@as(i32, wm.fb_x) + off[0], 8, @as(i32, p.width) - 8);
+                const ny_i = std.math.clamp(@as(i32, wm.fb_y) + off[1], 8, @as(i32, p.height) - 8);
+                // Skip if too close to an existing marker
+                var dupe = false;
+                for (p.markers) |m| {
+                    const dx = @as(i32, m.fb_x) - nx_i;
+                    const dy = @as(i32, m.fb_y) - ny_i;
+                    if (dx * dx + dy * dy < 40 * 40) {
+                        dupe = true;
+                        break;
+                    }
+                }
+                for (new_markers.items) |m| {
+                    const dx = @as(i32, m.fb_x) - nx_i;
+                    const dy = @as(i32, m.fb_y) - ny_i;
+                    if (dx * dx + dy * dy < 40 * 40) {
+                        dupe = true;
+                        break;
+                    }
+                }
+                if (dupe) continue;
+                id_num += 1;
+                const id = try std.fmt.allocPrint(global_allocator, "M{d}", .{id_num});
+                try new_markers.append(global_allocator, .{ .id = id, .fb_x = @intCast(nx_i), .fb_y = @intCast(ny_i) });
+            }
+        }
+
+        if (new_markers.items.len == 0) {
+            // No space for refine markers — accept what we have but warn
+            p.solution = sol;
+            const msg = try std.fmt.allocPrint(allocator, "Fit rmse {d:.1}px exceeds the {d:.1}px target, but no room remains to place refine markers. Call action=\"commit\" to accept, or action=\"start\" to retry with fresh screenshots.", .{ sol.rmse, rmse_accept_px });
+            return textContent(allocator, msg);
+        }
+
+        // Merge markers into pending
+        const merged_markers = try global_allocator.alloc(CalMarker, p.markers.len + new_markers.items.len);
+        @memcpy(merged_markers[0..p.markers.len], p.markers);
+        @memcpy(merged_markers[p.markers.len..], new_markers.items);
+        global_allocator.free(p.markers);
+        global_allocator.free(new_markers.items);
+        p.markers = merged_markers;
+        p.rounds += 1;
+
+        var lbl = std.ArrayList(image.LabeledMarker){};
+        defer lbl.deinit(allocator);
+        var id_list = std.ArrayList(u8){};
+        defer id_list.deinit(allocator);
+        for (p.markers) |m| {
+            if (m.obs_x == null) {
+                try lbl.append(allocator, .{ .label = m.id, .x = m.fb_x, .y = m.fb_y });
+                const seg = try std.fmt.allocPrint(allocator, "{s}=({d},{d}) ", .{ m.id, m.fb_x, m.fb_y });
+                defer allocator.free(seg);
+                try id_list.appendSlice(allocator, seg);
+            }
+        }
+
+        const client = try getClient(arguments);
+        const fb = try client.screenshot();
+        const jpeg = try image.encodeJpegWithLabeledMarkers(allocator, fb, 75, lbl.items);
+        defer allocator.free(jpeg);
+
+        const meta = try std.fmt.allocPrint(allocator, "Fit so far: rmse {d:.1}px over {d} samples — above the {d:.1}px target; refine round {d} placed {d} additional markers near the worst-fitting points.\nNew markers (framebuffer positions): {s}\nResolution: {d}x{d} pixels\n\nMeasure the NEW markers (ids listed) the same way — position of each magenta dot in this image as displayed to you — then call vnc_calibrate action=\"submit\" with those samples. Previously submitted samples are kept and remain part of the fit.", .{ sol.rmse, sample_list.items.len, rmse_accept_px, p.rounds, lbl.items.len, id_list.items, p.width, p.height });
+        return imageContentWithMeta(allocator, jpeg, meta);
+    }
+
+    if (sol.rmse > rmse_accept_px) {
+        // Max rounds exhausted — offer commit-or-restart
+        p.solution = sol;
+        const msg = try std.fmt.allocPrint(allocator, "Fit rmse {d:.1}px still above {d:.1}px after {d} rounds. The display scaling may be non-uniform (letterboxing or per-region scaling). Call action=\"commit\" to accept this fit, or action=\"start\" to retry. Consider capturing a vnc_grid image and verifying the IDE's rendering scale manually.", .{ sol.rmse, rmse_accept_px, p.rounds });
+        return textContent(allocator, msg);
+    }
+
+    p.solution = sol;
+
+    // Summarize fit + residuals
+    var worst_i: usize = 0;
+    for (sol.residuals, 0..) |r, i| {
+        if (r > sol.residuals[worst_i]) worst_i = i;
+    }
+    const summary = try std.fmt.allocPrint(allocator, "Calibration fit OK: rmse {d:.1}px over {d} samples across {d} round(s).\nTransform: fb_x = {d:.4}·obs_x + {d:.1}; fb_y = {d:.4}·obs_y + {d:.1}\nWorst residual: {d:.1}px at marker {s}\n\nCall vnc_calibrate action=\"commit\" to save. After that, coordinate tools accept coordinate_space=\"calibrated\" with positions read directly from returned images.", .{ sol.rmse, sample_list.items.len, p.rounds, sol.x_a, sol.x_b, sol.y_a, sol.y_b, sol.residuals[worst_i], sample_list.items[worst_i].id });
+    const msg = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ summary, cal.statusLine(allocator, ep.id, p.width, p.height) });
+    allocator.free(summary);
+    return textContent(allocator, msg);
+}
+
+fn worstResidualMarkers(markers: []CalMarker, samples: []cal.Sample, sol: cal.Solution, allocator: std.mem.Allocator) ![]CalMarker {
+    _ = samples;
+    // Index residuals parallel to samples order — residuals align with the
+    // observed-subset order, so recompute the observed list to stay paired.
+    var obs = try allocator.alloc(CalMarker, markers.len);
+    var n: usize = 0;
+    for (markers) |m| {
+        if (m.obs_x != null) {
+            obs[n] = m;
+            n += 1;
+        }
+    }
+    // Take up to 2 worst by residual (residuals[i] pairs with obs[i])
+    var idx = try allocator.alloc(usize, n);
+    defer allocator.free(idx);
+    for (0..n) |i| idx[i] = i;
+    std.mem.sort(usize, idx, sol.residuals, struct {
+        fn lessThan(res: []f64, a: usize, b: usize) bool {
+            return res[a] > res[b];
+        }
+    }.lessThan);
+
+    var out = try allocator.alloc(CalMarker, @min(n, 2));
+    const take = @min(n, 2);
+    for (0..take) |i| {
+        out[i] = obs[idx[i]];
+    }
+    return out;
+}
+
+fn calActionCommit(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    _ = arguments;
+    const p = &(pending_cal orelse
+        return textContent(allocator, "ERROR: nothing to commit — call action=\"start\", then submit samples."));
+    _ = p;
+    var pc = pending_cal.?;
+    const sol = pc.solution orelse
+        return textContent(allocator, "ERROR: no solved transform yet — submit samples first (action=\"submit\").");
+
+    const cid_opt = try cal.clientId(allocator);
+    const cid = cid_opt orelse
+        return textContent(allocator, "ERROR: this client did not identify itself (no clientInfo.name) — calibrations are keyed per agent identity; cannot save.");
+    defer allocator.free(cid);
+    if (!cal.isUsableClient(cid)) {
+        const msg = try std.fmt.allocPrint(allocator, "ERROR: client identity '{s}' is generic — refusing to save an unkeyed calibration that could be picked up by unrelated agents.", .{cid});
+        return textContent(allocator, msg);
+    }
+
+    const id = try cal.calibrationId(allocator, cid, pc.endpoint_id, pc.width, pc.height);
+    defer allocator.free(id);
+
+    const record = cal.Record{
+        .client_id = cid,
+        .client_name = cal.clientName(),
+        .client_version = cal.clientVersion(),
+        .endpoint_id = pc.endpoint_id,
+        .width = pc.width,
+        .height = pc.height,
+        .x_a = sol.x_a,
+        .x_b = sol.x_b,
+        .y_a = sol.y_a,
+        .y_b = sol.y_b,
+        .rmse = sol.rmse,
+        .rounds = pc.rounds,
+        .created_at = 0,
+        .updated_at = 0,
+    };
+    try cal.upsert(allocator, &record, id);
+
+    const path = try cal.filePath(allocator);
+    defer allocator.free(path);
+    const msg = try std.fmt.allocPrint(allocator, "Calibration saved. id={s} endpoint={s} resolution={d}x{d} rmse={d:.1}px rounds={d}\nStored in {s}.\nUsage: pass coordinate_space=\"calibrated\" and coordinates taken directly from returned images. Valid until the target resolution changes or you re-run vnc_calibrate.", .{ id, pc.endpoint_id, pc.width, pc.height, sol.rmse, pc.rounds, path });
+    allocator.free(sol.residuals);
+    pc.solution = null;
+    calResetPendingP();
+    return textContent(allocator, msg);
+}
+
+fn calActionStatus(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    var out = std.ArrayList(u8){};
+    errdefer out.deinit(allocator);
+
+    const cid_opt = try cal.clientId(allocator);
+    defer if (cid_opt) |c| allocator.free(c);
+
+    if (cid_opt) |cid| {
+        const usable = cal.isUsableClient(cid);
+        const line = try std.fmt.allocPrint(allocator, "client_id: {s} (from clientInfo name '{s}' v{s}){s}\n", .{ cid, cal.clientName() orelse "?", cal.clientVersion() orelse "?", if (usable) "" else " — GENERIC, cannot save calibrations" });
+        defer allocator.free(line);
+        try out.appendSlice(allocator, line);
+    } else {
+        try out.appendSlice(allocator, "client_id: none (client did not send clientInfo.name)\n");
+    }
+
+    const ep = getEndpoint(arguments) catch {
+        try out.appendSlice(allocator, "endpoint: (unresolvable)\n");
+        return textContent(allocator, try out.toOwnedSlice(allocator));
+    };
+    const dims = currentDims(arguments) catch {
+        try out.appendSlice(allocator, "resolution: (endpoint unreachable)\n");
+        return textContent(allocator, try out.toOwnedSlice(allocator));
+    };
+    const dl = try std.fmt.allocPrint(allocator, "endpoint: {s}  current resolution: {d}x{d}\n", .{ ep.id, dims.w, dims.h });
+    defer allocator.free(dl);
+    try out.appendSlice(allocator, dl);
+
+    const cid = cid_opt orelse {
+        try out.appendSlice(allocator, cal.statusLine(allocator, ep.id, dims.w, dims.h));
+        return textContent(allocator, try out.toOwnedSlice(allocator));
+    };
+
+    var store = try cal.load(allocator);
+    defer store.deinit();
+
+    if (store.find(cid, ep.id, dims.w, dims.h)) |rec| {
+        const id = try cal.calibrationId(allocator, cid, ep.id, dims.w, dims.h);
+        defer allocator.free(id);
+        const line = try std.fmt.allocPrint(allocator, "record: id={s} rmse={d:.2}px rounds={d}\n  transform: fb_x={d:.4}·obs_x+{d:.2}  fb_y={d:.4}·obs_y+{d:.2}\n  created={d} updated={d}\n", .{ id, rec.rmse, rec.rounds, rec.x_a, rec.x_b, rec.y_a, rec.y_b, rec.created_at, rec.updated_at });
+        defer allocator.free(line);
+        try out.appendSlice(allocator, line);
+    } else if (store.findAnyForEndpoint(cid, ep.id)) |rec| {
+        const line = try std.fmt.allocPrint(allocator, "record: STALE — saved for {d}x{d}, current is {d}x{d}. Re-run vnc_calibrate action=\"start\".\n", .{ rec.width, rec.height, dims.w, dims.h });
+        defer allocator.free(line);
+        try out.appendSlice(allocator, line);
+    } else {
+        try out.appendSlice(allocator, "record: none for this endpoint/resolution — run vnc_calibrate action=\"start\".\n");
+    }
+
+    try out.appendSlice(allocator, cal.statusLine(allocator, ep.id, dims.w, dims.h));
+    return textContent(allocator, try out.toOwnedSlice(allocator));
+}
+
+fn calActionClear(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const cid_opt = try cal.clientId(allocator);
+    const cid = cid_opt orelse
+        return textContent(allocator, "ERROR: client did not identify itself — nothing can be attributed to you, nothing to clear.");
+    defer allocator.free(cid);
+
+    const ep = try getEndpoint(arguments);
+    const dims = try currentDims(arguments);
+    const removed = try cal.remove(allocator, cid, ep.id, dims.w, dims.h);
+    const msg = if (removed)
+        try std.fmt.allocPrint(allocator, "Calibration cleared for ({s}, {s}, {d}x{d}).", .{ cid, ep.id, dims.w, dims.h })
+    else
+        try std.fmt.allocPrint(allocator, "No calibration record existed for ({s}, {s}, {d}x{d}).", .{ cid, ep.id, dims.w, dims.h });
+    calResetPendingP();
+    return textContent(allocator, msg);
 }

@@ -488,6 +488,43 @@ pub fn encodeJpegWithProbe(allocator: std.mem.Allocator, fb: *const rfb_client.F
     return ctx.toOwnedSlice();
 }
 
+pub const LabeledMarker = struct { label: []const u8, x: u16, y: u16 };
+
+/// Encode a framebuffer as JPEG with several labeled markers (calibration sets).
+/// Each marker is the standard yellow ring + magenta center dot, numbered beside it.
+pub fn encodeJpegWithLabeledMarkers(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffer, quality: u8, markers: []const LabeledMarker) ![]u8 {
+    const rgb = try fb.toRgb888(allocator);
+    defer allocator.free(rgb);
+
+    for (markers) |m| {
+        // Label first (underneath the marker), letter placed up-right of the ring
+        const lx: i32 = @as(i32, @intCast(m.x)) + 16;
+        const ly: i32 = @as(i32, @intCast(m.y)) - 18;
+        drawStringOutlined(rgb, fb.width, fb.height, m.label, lx, ly, 2, 255, 255, 0);
+        drawMarker(rgb, fb.width, fb.height, m.x, m.y, 10, 2);
+    }
+
+    var ctx = WriteContext{ .allocator = allocator };
+    errdefer ctx.deinit();
+
+    const result = c.stbi_write_jpg_to_func(
+        stbWriteCallback,
+        &ctx,
+        @intCast(fb.width),
+        @intCast(fb.height),
+        3,
+        rgb.ptr,
+        @intCast(@min(quality, 100)),
+    );
+
+    if (result == 0) {
+        ctx.deinit();
+        return error.EncodingFailed;
+    }
+
+    return ctx.toOwnedSlice();
+}
+
 /// Draw a labeled grid overlay on RGB888 pixel data.
 /// Columns labeled A-P, rows labeled 1-12. Each cell center coordinate returned via metadata.
 pub fn drawGrid(rgb: []u8, width: u16, height: u16, cols: u8, rows: u8) void {

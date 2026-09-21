@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased] — 0.10.0 (candidate)
+
+### Added
+- **`vnc_calibrate` tool (#23)** — per-(client, endpoint, resolution) coordinate calibration. A calibration round places numbered markers at known framebuffer positions (`action=start`); the agent reports where each marker appears in the image *as displayed to it* (`action=submit`); a least-squares transform (fb = a·obs + b per axis) is solved with RMSE reported; above 4px a refine round places additional markers near the worst outliers (up to 5 rounds); `action=commit` persists to `~/.config/vnc-mcp/calibration.json` (atomic tmp+rename), `status`/`clear` inspect and delete. Records are valid indefinitely until re-calibrated.
+- **Calibration identity from `clientInfo`** — the server now reads `params.clientInfo` at `initialize` and keys calibrations as `sha256(client_name | endpoint_id | WxH)[:16]`. `clientInfo.version` is never hashed, so client updates do not invalidate records. Generic or missing identities cannot save calibrations. Raw handshakes are logged to `~/.config/vnc-mcp/client-log.jsonl` (one line per process) as the empirical record of which names each agent sends.
+- **`coordinate_space` parameter** on `vnc_click`, `vnc_drag`, `vnc_move_mouse`, `vnc_scroll`, `vnc_probe` — `"framebuffer"` (default, unchanged behavior) or `"calibrated"`, which maps image-space coordinates to framebuffer pixels via the saved record. Missing or resolution-stale records are a hard error naming `vnc_calibrate` — never a silent wrong click.
+- **Calibration status notes in responses** — `vnc_screenshot`, `vnc_probe`, `vnc_grid`, and `vnc_click` responses carry a `Calibration:` line reflecting the requesting client's state (ACTIVE/STALE/ABSENT) for that endpoint and resolution.
+- **Client-conditioned tool descriptions** — `tools/list` now appends a calibration clause to the spatial tools' descriptions based on the requesting client's calibration state (schema is no longer served as a static blob).
+- **Client-conditioned `instructions`** — clients with saved calibrations receive instructions that drop the pre-calibration coordinate workarounds in favor of the calibrated-space contract.
+
+### Changed
+- The `initialize` instructions now state explicitly that clicks are inaccurate until calibration is done (uncalibrated clients).
+
 ## [0.9.1] - 2026-08-08
 
 ### Fixed

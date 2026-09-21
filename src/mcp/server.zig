@@ -1,5 +1,6 @@
 const std = @import("std");
 const tools_mod = @import("tools.zig");
+const cal = @import("../calibration.zig");
 
 const log = std.log.scoped(.mcp);
 
@@ -166,7 +167,7 @@ pub const McpServer = struct {
 
             // Route method
             if (std.mem.eql(u8, method, "initialize")) {
-                try self.handleInitialize(id);
+                try self.handleInitialize(id, params);
             } else if (std.mem.eql(u8, method, "initialized")) {
                 self.initialized = true;
                 // Notification — no response needed
@@ -194,34 +195,82 @@ pub const McpServer = struct {
         }
     }
 
-    fn handleInitialize(self: *McpServer, id: ?JsonValue) !void {
+    fn handleInitialize(self: *McpServer, id: ?JsonValue, params: ?JsonValue) !void {
         const id_str = try self.formatId(id);
         defer self.allocator.free(id_str);
 
-        const instructions =
+        // Capture client identity for calibration keying + discovery logging.
+        // clientInfo.version is stored for diagnostics but never part of the
+        // calibration hash, so client updates cannot invalidate calibration.
+        var protocol_version: ?[]const u8 = null;
+        if (params) |p| {
+            if (p == .object) {
+                if (p.object.get("protocolVersion")) |v| {
+                    if (v == .string) protocol_version = v.string;
+                }
+                if (p.object.get("clientInfo")) |ci| {
+                    if (ci == .object) {
+                        const name = if (ci.object.get("name")) |n| (if (n == .string) n.string else null) else null;
+                        const ver = if (ci.object.get("version")) |v| (if (v == .string) v.string else null) else null;
+                        cal.setClientIdentity(name, ver);
+                        log.info("client identified: {s} {s}", .{ name orelse "?", ver orelse "?" });
+                    }
+                }
+            }
+        }
+        cal.logInitialize(self.allocator, protocol_version);
+
+        const instructions_reliability =
+            "\n\nIMPORTANT — Interaction Strategy:\n" ++
+            "1. Prefer keyboard navigation (Alt+Tab, Win+R, Tab, Enter, F6, Alt+D, Escape) over clicks — keys are always reliable.\n" ++
+            "2. Before clicking, verify which window has focus via vnc_active_window.\n" ++
+            "4. Use vnc_ocr_region to verify text content at coordinates before acting on assumptions.\n" ++
+            "5. For window switching, use Alt+Tab or vnc_set_active_window — do NOT click taskbar buttons by guessing.\n" ++
+            "9. vnc_ui_click_element is UNRELIABLE for disambiguation — partial name matching may activate the WRONG element. " ++
+            "It returns empty data on success with no confirmation of what was clicked. Always verify with a screenshot after using it.\n" ++
+            "10. Helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region, vnc_list_processes, vnc_list_services, vnc_registry_read) provide authoritative system state — prefer them over visual guessing.";
+
+        const instructions_uncalibrated =
             "VNC remote desktop control server. Use vnc_list_endpoints to see available machines. " ++
             "All tools accept an optional 'endpoint' parameter to target a specific machine.\n\n" ++
             "CRITICAL — Screenshot Coordinates:\n" ++
             "Screenshots include 'Resolution: WxH pixels' metadata (e.g., 1918x968). Your IDE displays them SCALED DOWN (~500px wide). " ++
             "You MUST compute coordinates using the ACTUAL resolution, NOT the scaled visual. " ++
-            "If resolution is 1918x968 and a target appears at visual center, its real coordinate is (959, 484), NOT (250, 125).\n\n" ++
-            "IMPORTANT — Interaction Strategy:\n" ++
-            "1. Prefer keyboard navigation (Alt+Tab, Win+R, Tab, Enter, F6, Alt+D, Escape) over clicks — keys are always reliable.\n" ++
-            "2. Before clicking, verify which window has focus via vnc_active_window.\n" ++
+            "If resolution is 1918x968 and a target appears at visual center, its real coordinate is (959, 484), NOT (250, 125).\n" ++
+            "Clicks are INACCURATE until you run vnc_calibrate for this endpoint — calibration is saved per (client, endpoint, resolution) and needs to be done once.\n\n" ++
             "3. NEVER estimate pixel coordinates from the scaled screenshot image. Use these methods instead:\n" ++
             "   (a) vnc_grid — overlays a labeled coordinate grid. Best for toolbars, ribbons, and dense UI. Use columns=12, rows=8 for fine targets.\n" ++
             "   (b) vnc_active_window/vnc_window_list — get window position, add known UI offsets (title bar ~32px, menu ~22px).\n" ++
             "   (c) vnc_probe — place a marker to verify coordinates visually before committing to a click.\n" ++
-            "4. Use vnc_ocr_region to verify text content at coordinates before acting on assumptions.\n" ++
-            "5. For window switching, use Alt+Tab or vnc_set_active_window — do NOT click taskbar buttons by guessing.\n" ++
             "6. When adjusting after a miss, change ONLY ONE axis at a time.\n" ++
             "7. Use vnc_probe BEFORE clicking uncertain targets. If the marker is NOT on the intended target, adjust and re-probe. Never ignore probe results.\n" ++
             "8. Use vnc_grid for toolbars and ribbons — these dense areas have many small targets that are impossible to hit by coordinate estimation. " ++
             "One grid call replaces multiple probe attempts.\n" ++
-            "9. vnc_ui_click_element is UNRELIABLE for disambiguation — partial name matching may activate the WRONG element. " ++
-            "It returns empty data on success with no confirmation of what was clicked. Always verify with a screenshot after using it. " ++
-            "Prefer keyboard shortcuts or grid-based clicking for critical interactions.\n" ++
-            "10. Helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region, vnc_list_processes, vnc_list_services, vnc_registry_read) provide authoritative system state — prefer them over visual guessing.";
+            instructions_reliability;
+
+        const instructions_calibrated =
+            "VNC remote desktop control server. Use vnc_list_endpoints to see available machines. " ++
+            "All tools accept an optional 'endpoint' parameter to target a specific machine.\n\n" ++
+            "CALIBRATION: You have saved coordinate calibration record(s). On coordinate tools pass coordinate_space=\"calibrated\" " ++
+            "and supply coordinates exactly where targets appear in the returned screenshots — the server maps them to framebuffer pixels. " ++
+            "No manual compensation is required. Records are saved per (client, endpoint, resolution); every spatial tool response carries a " ++
+            "Calibration: status line — always honor it. Re-run vnc_calibrate when it reports STALE (resolution change) or when clicks start to miss.\n\n" ++
+            instructions_reliability;
+
+        const calibrated = blk: {
+            const cid_opt = cal.clientId(self.allocator) catch break :blk false;
+            const cid = cid_opt orelse break :blk false;
+            defer self.allocator.free(cid);
+            if (!cal.isUsableClient(cid)) {
+                log.warn("client identity '{s}' is generic — calibration persistence disabled for this session", .{cid});
+                break :blk false;
+            }
+            var store = cal.load(self.allocator) catch break :blk false;
+            defer store.deinit();
+            break :blk store.findAnyForClient(cid) != null;
+        };
+
+        const instructions = if (calibrated) instructions_calibrated else instructions_uncalibrated;
 
         const escaped_instructions = try jsonEscape(self.allocator, instructions);
         defer self.allocator.free(escaped_instructions);
@@ -239,7 +288,19 @@ pub const McpServer = struct {
         const id_str = try self.formatId(id);
         defer self.allocator.free(id_str);
 
-        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"tools\":{s}}}}}", .{ id_str, tools_json });
+        // Descriptions are tailored per client: spatial tools carry a clause
+        // reflecting THIS client's calibration state (calibration notes in
+        // static text describe generic behavior; the clause carries state).
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, tools_json, .{}) catch {
+            const fallback = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"tools\":{s}}}}}", .{ id_str, tools_json });
+            defer self.allocator.free(fallback);
+            try self.writeLine(fallback);
+            return;
+        };
+        defer parsed.deinit();
+        tools_mod.tailorDescriptions(self.allocator, &parsed.value) catch {};
+
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"tools\":{f}}}}}", .{ id_str, std.json.fmt(parsed.value, .{}) });
         defer self.allocator.free(response);
 
         try self.writeLine(response);
