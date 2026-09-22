@@ -130,6 +130,58 @@ pub const HelperConnection = struct {
         return true;
     }
 
+    /// TCP connect with a bounded timeout (non-blocking + kqueue).
+    /// A blocked helper host (agent down, firewall drop) otherwise hangs
+    /// connect() for the kernel's ~75s SYN retransmit stack — wedging the
+    /// MCP server and the IDE's session with it.
+    fn connectWithTimeout(allocator: std.mem.Allocator, host: []const u8, port: u16, timeout_ms: u64) !std.net.Stream {
+        const list = try std.net.getAddressList(allocator, host, port);
+        defer list.deinit();
+        if (list.addrs.len == 0) return error.UnknownHostName;
+        const addr = list.addrs[0];
+
+        const sock = try std.posix.socket(addr.any.family, std.posix.SOCK.STREAM | std.posix.SOCK.NONBLOCK, std.posix.IPPROTO.TCP);
+        errdefer std.posix.close(sock);
+
+        std.posix.connect(sock, &addr.any, addr.getOsSockLen()) catch |err| switch (err) {
+            error.WouldBlock => {}, // in progress — wait below
+            else => return error.ConnectionFailed,
+        };
+
+        const kq = std.posix.kqueue() catch return error.ConnectionFailed;
+        defer std.posix.close(kq);
+
+        var changelist = [_]std.posix.Kevent{.{
+            .ident = @intCast(sock),
+            .filter = std.c.EVFILT.WRITE,
+            .flags = std.c.EV.ADD | std.c.EV.ONESHOT,
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        }};
+        var eventlist: [1]std.posix.Kevent = undefined;
+        const ts = std.posix.timespec{
+            .sec = @intCast(timeout_ms / 1000),
+            .nsec = @intCast((timeout_ms % 1000) * 1_000_000),
+        };
+        const n = std.posix.kevent(kq, &changelist, &eventlist, &ts) catch return error.ConnectionFailed;
+        if (n == 0) return error.ConnectTimeout;
+
+        std.posix.getsockoptError(sock) catch |err| {
+            return switch (err) {
+                error.ConnectionRefused => error.ConnectionRefused,
+                else => error.ConnectionFailed,
+            };
+        };
+
+        // Connected — restore blocking mode for the read/write loop.
+        const flags = try std.posix.fcntl(sock, std.posix.F.GETFL, 0);
+        const nonblock: u32 = @bitCast(std.posix.O{ .NONBLOCK = true });
+        _ = try std.posix.fcntl(sock, std.posix.F.SETFL, flags & ~@as(@TypeOf(flags), nonblock));
+
+        return std.net.Stream{ .handle = sock };
+    }
+
     /// Ensure we have a live TCP connection. Connect + auth if needed.
     fn ensureConnected(self: *HelperConnection) !std.net.Stream {
         if (self.stream) |s| {
@@ -138,7 +190,7 @@ pub const HelperConnection = struct {
             self.disconnect();
         }
 
-        const stream = std.net.tcpConnectToHost(self.allocator, self.host, self.port) catch |err| {
+        const stream = connectWithTimeout(self.allocator, self.host, self.port, 5000) catch |err| {
             log.warn("helper connection to {s}:{d} failed: {}", .{ self.host, self.port, err });
             return error.ConnectionFailed;
         };

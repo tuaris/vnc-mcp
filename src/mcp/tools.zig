@@ -1268,6 +1268,38 @@ fn toolUploadFile(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };
+
+    // Don't trust "status":"ok" blindly — historically the agent silently
+    // truncated large uploads and reported success (vnc-mcp-server#22).
+    // Compare the agent's reported byte count against the actual file size.
+    if (std.json.parseFromSlice(std.json.Value, allocator, response, .{ .ignore_unknown_fields = true })) |*parsed| {
+        defer parsed.deinit();
+        if (parsed.value == .object) {
+            const root = parsed.value.object;
+            const ok = if (root.get("status")) |s| (s == .string and std.mem.eql(u8, s.string, "ok")) else false;
+            if (ok) {
+                if (root.get("data")) |d| {
+                    if (d == .object) {
+                        if (d.object.get("bytes")) |b| {
+                            const reported: i64 = switch (b) {
+                                .integer => b.integer,
+                                .float => @intFromFloat(b.float),
+                                else => -1,
+                            };
+                            if (reported >= 0 and reported != @as(i64, @intCast(file_data.len))) {
+                                const msg = try std.fmt.allocPrint(allocator, "ERROR: upload verification FAILED — agent wrote {d} bytes but the local file is {d} bytes. The remote file is corrupt. Response: {s}", .{ reported, file_data.len, response });
+                                return textContent(allocator, msg);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else |_| {
+        // Unparseable response from the agent — surface it, don't claim success.
+        const msg = try std.fmt.allocPrint(allocator, "ERROR: agent returned an unparseable upload response (possible truncation). Response: {s}", .{response});
+        return textContent(allocator, msg);
+    }
     return textContent(allocator, response);
 }
 
