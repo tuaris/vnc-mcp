@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Removed stale "frame may be up to 500ms stale" warning from the `vnc_screenshot` tool description — superseded by the kqueue-based adaptive capture (converges to a stable frame), matching the instructions rewrite in 0.5.0.
+
 ## [0.10.0] - 2026-09-21
 
 ### Added
