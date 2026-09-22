@@ -295,9 +295,9 @@ pub const Client = struct {
         self.height = std.mem.readInt(u16, init_buf[2..4], .big);
         const server_pf = protocol.PixelFormat.decode(init_buf[4..20]);
         log.info("server pixel format: {d}bpp depth={d} be={} tc={} rmax={d} gmax={d} bmax={d} rs={d} gs={d} bs={d}", .{
-            server_pf.bits_per_pixel, server_pf.depth, server_pf.big_endian, server_pf.true_colour,
-            server_pf.red_max, server_pf.green_max, server_pf.blue_max,
-            server_pf.red_shift, server_pf.green_shift, server_pf.blue_shift,
+            server_pf.bits_per_pixel, server_pf.depth,      server_pf.big_endian, server_pf.true_colour,
+            server_pf.red_max,        server_pf.green_max,  server_pf.blue_max,   server_pf.red_shift,
+            server_pf.green_shift,    server_pf.blue_shift,
         });
 
         const name_len = std.mem.readInt(u32, init_buf[20..24], .big);
@@ -483,7 +483,7 @@ pub const Client = struct {
 
     /// Wait for data on the VNC socket using kqueue (event-driven).
     /// Returns true if data is available, false on timeout or error.
-    fn waitForData(self: *Client, timeout_ms: u32) bool {
+    pub fn waitForData(self: *Client, timeout_ms: u32) bool {
         const EV_EOF: u16 = 0x8000;
         const kq = std.posix.kqueue() catch return false;
         defer std.posix.close(kq);

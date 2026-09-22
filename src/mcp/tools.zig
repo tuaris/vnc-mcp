@@ -295,6 +295,8 @@ fn imageContent(allocator: std.mem.Allocator, jpeg_data: []const u8) !JsonValue 
 pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?JsonValue) anyerror!JsonValue {
     if (std.mem.eql(u8, name, "vnc_screenshot")) {
         return toolScreenshot(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_capture_burst")) {
+        return toolCaptureBurst(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_probe")) {
         return toolProbe(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_grid")) {
@@ -403,6 +405,144 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
     defer allocator.free(status);
     const meta = try std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels\n{s}", .{ fb.width, fb.height, status });
     return imageContentWithMeta(allocator, jpeg, meta);
+}
+
+/// vnc_capture_burst (#21) — rapid frame sequence for transient UI states
+/// (toasts, hover highlights, animations) whose lifetime is shorter than
+/// one screenshot round trip. One non-incremental baseline frame, then
+/// ticks on a fixed interval; between ticks incremental server updates are
+/// pumped via kqueue waits, so mostly-static screens cost almost nothing
+/// per frame. Frames are snapshotted (region crop + scale) at tick time
+/// and JPEG-encoded after capture, with quality degraded if the payload
+/// cap is exceeded.
+fn toolCaptureBurst(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    var count: u32 = 15;
+    var interval_ms: u32 = 333;
+    var quality: u8 = 60;
+    var scale: f32 = 0.5;
+    var region: ?[4]u16 = null; // x, y, w, h in framebuffer pixels
+    if (arguments) |args| {
+        if (args == .object) {
+            if (getInt(args.object, "count")) |v| count = @intCast(@max(1, @min(v, 30)));
+            if (getInt(args.object, "interval_ms")) |v| interval_ms = @intCast(@max(50, @min(v, 5000)));
+            if (getInt(args.object, "quality")) |v| quality = @intCast(@max(1, @min(v, 100)));
+            if (getFloat(args.object, "scale")) |v| scale = @floatCast(std.math.clamp(v, 0.05, 4.0));
+            const rx_v = getInt(args.object, "region_x");
+            const ry_v = getInt(args.object, "region_y");
+            const rw_v = getInt(args.object, "region_w");
+            const rh_v = getInt(args.object, "region_h");
+            if (rx_v != null and ry_v != null and rw_v != null and rh_v != null and
+                rw_v.? > 0 and rh_v.? > 0)
+            {
+                region = .{
+                    @intCast(@max(0, @min(rx_v.?, 65535))),
+                    @intCast(@max(0, @min(ry_v.?, 65535))),
+                    @intCast(@min(rw_v.?, 65535)),
+                    @intCast(@min(rh_v.?, 65535)),
+                };
+            }
+        }
+    }
+
+    const client = try getClient(arguments);
+
+    // Baseline: full non-incremental frame so every pixel is defined
+    try client.requestUpdate(false);
+    try client.receiveUpdate();
+    if (client.framebuffer == null) return error.FramebufferNotReady;
+    const fb_w = client.framebuffer.?.width;
+    const fb_h = client.framebuffer.?.height;
+    const rect: [4]u16 = region orelse .{ 0, 0, fb_w, fb_h };
+
+    var timer = try std.time.Timer.start();
+
+    var snaps = std.ArrayList([]u8){};
+    defer for (snaps.items) |s| allocator.free(s);
+    var snap_w: u16 = 0;
+    var snap_h: u16 = 0;
+    var stamps = std.ArrayList(i64){};
+    defer stamps.deinit(allocator);
+
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        if (i > 0) {
+            // Request deltas up front so they stream in DURING the wait,
+            // then pump updates as they arrive until the tick.
+            try client.requestUpdate(true);
+            const target: i64 = @as(i64, i) * interval_ms;
+            while (true) {
+                const now: i64 = @intCast(timer.read() / std.time.ns_per_ms);
+                const remain = target - now;
+                if (remain <= 0) break;
+                if (client.waitForData(@intCast(@min(remain, 50)))) {
+                    client.receiveUpdate() catch break;
+                }
+            }
+        }
+        const fbp = &(client.framebuffer orelse return error.FramebufferNotReady);
+        try snaps.append(allocator, try image.snapshotRegionRgb(allocator, fbp, rect[0], rect[1], rect[2], rect[3], scale, &snap_w, &snap_h));
+        try stamps.append(allocator, @intCast(timer.read() / std.time.ns_per_ms));
+    }
+
+    // Encode; degrade quality if the payload cap (6MB raw, ~8MB base64) trips
+    const payload_cap: usize = 6_000_000;
+    var degrade_note: []const u8 = "";
+    var q = quality;
+    var jpegs = std.ArrayList([]u8){};
+    defer for (jpegs.items) |j| allocator.free(j);
+    while (true) {
+        for (snaps.items) |s| {
+            try jpegs.append(allocator, try image.encodeJpegRgb(allocator, s, snap_w, snap_h, q));
+        }
+        var total: usize = 0;
+        for (jpegs.items) |j| total += j.len;
+        if (total <= payload_cap) break;
+        if (q <= 25) {
+            degrade_note = try std.fmt.allocPrint(allocator, "\nNOTE: payload cap hit — kept quality {d}; response may be large.", .{q});
+            break;
+        }
+        for (jpegs.items) |j| allocator.free(j);
+        jpegs.clearRetainingCapacity();
+        q = @max(25, q - 15);
+        degrade_note = try std.fmt.allocPrint(allocator, "\nNOTE: quality reduced to {d} (payload cap).", .{q});
+    }
+
+    var meta_buf = std.ArrayList(u8){};
+    defer meta_buf.deinit(allocator);
+    const header = try std.fmt.allocPrint(allocator, "Burst: {d} frames, interval {d} ms, region {d}x{d}+{d}+{d} @ {d:.2}x scale, Resolution: {d}x{d} framebuffer\nFrames (ms from start):", .{ snaps.items.len, interval_ms, rect[2], rect[3], rect[0], rect[1], scale, fb_w, fb_h });
+    defer allocator.free(header);
+    try meta_buf.appendSlice(allocator, header);
+    for (stamps.items, 0..) |t, n| {
+        const s = try std.fmt.allocPrint(allocator, " {d}:{d}", .{ n + 1, t });
+        defer allocator.free(s);
+        try meta_buf.appendSlice(allocator, s);
+    }
+    try meta_buf.appendSlice(allocator, degrade_note);
+    try meta_buf.append(allocator, '\n');
+    const ep = try getEndpoint(arguments);
+    const status = cal.statusLine(allocator, ep.id, fb_w, fb_h);
+    defer allocator.free(status);
+    try meta_buf.appendSlice(allocator, status);
+
+    const base64_encoder = std.base64.standard;
+    var content_arr = std.json.Array.init(allocator);
+    var text_item = std.json.ObjectMap.init(allocator);
+    try text_item.put("type", JsonValue{ .string = "text" });
+    try text_item.put("text", JsonValue{ .string = try allocator.dupe(u8, meta_buf.items) });
+    try content_arr.append(JsonValue{ .object = text_item });
+    for (jpegs.items) |j| {
+        const encoded_len = base64_encoder.Encoder.calcSize(j.len);
+        const encoded = try allocator.alloc(u8, encoded_len);
+        _ = base64_encoder.Encoder.encode(encoded, j);
+        var img_item = std.json.ObjectMap.init(allocator);
+        try img_item.put("type", JsonValue{ .string = "image" });
+        try img_item.put("data", JsonValue{ .string = encoded });
+        try img_item.put("mimeType", JsonValue{ .string = "image/jpeg" });
+        try content_arr.append(JsonValue{ .object = img_item });
+    }
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("content", JsonValue{ .array = content_arr });
+    return JsonValue{ .object = result };
 }
 
 /// Try to capture a screenshot via the WinMCP agent's native DXGI backend.

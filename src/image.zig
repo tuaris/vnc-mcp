@@ -180,6 +180,105 @@ pub fn encodeJpeg(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffe
     return ctx.toOwnedSlice();
 }
 
+/// Copy a framebuffer region as packed RGB888, scaled by `scale`.
+/// The rect is clamped to the framebuffer. Burst capture uses this at tick
+/// time because the framebuffer mutates in place. Caller owns the result;
+/// `out_w`/`out_h` receive the scaled dimensions.
+pub fn snapshotRegionRgb(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffer, x: u16, y: u16, w: u16, h: u16, scale: f32, out_w: *u16, out_h: *u16) ![]u8 {
+    const rx = @min(x, fb.width -| 1);
+    const ry = @min(y, fb.height -| 1);
+    const rw = @min(w, fb.width - rx);
+    const rh = @min(h, fb.height - ry);
+    if (rw == 0 or rh == 0) return error.EmptyRegion;
+
+    var rgb = try allocator.alloc(u8, @as(usize, rw) * rh * 3);
+    errdefer allocator.free(rgb);
+    var row: usize = 0;
+    while (row < rh) : (row += 1) {
+        var col: usize = 0;
+        while (col < rw) : (col += 1) {
+            const p = fb.getPixelRgb(rx + @as(u16, @intCast(col)), ry + @as(u16, @intCast(row)));
+            const o = (row * rw + col) * 3;
+            rgb[o] = p[0];
+            rgb[o + 1] = p[1];
+            rgb[o + 2] = p[2];
+        }
+    }
+
+    const scale_clamped = std.math.clamp(scale, 0.05, 4.0);
+    out_w.* = @intFromFloat(@max(1.0, @floor(@as(f32, @floatFromInt(rw)) * scale_clamped)));
+    out_h.* = @intFromFloat(@max(1.0, @floor(@as(f32, @floatFromInt(rh)) * scale_clamped)));
+    if (scale_clamped == 1.0 or (@as(usize, out_w.*) == rw and @as(usize, out_h.*) == rh)) return rgb;
+    defer allocator.free(rgb);
+    return resizeBoxRgb(allocator, rgb, rw, rh, out_w.*, out_h.*);
+}
+
+/// Encode raw packed RGB888 as JPEG.
+pub fn encodeJpegRgb(allocator: std.mem.Allocator, rgb: []const u8, w: u16, h: u16, quality: u8) ![]u8 {
+    var ctx = WriteContext{ .allocator = allocator };
+    errdefer ctx.deinit();
+
+    const result = c.stbi_write_jpg_to_func(
+        stbWriteCallback,
+        &ctx,
+        @intCast(w),
+        @intCast(h),
+        3, // RGB components
+        rgb.ptr,
+        @intCast(@min(quality, 100)),
+    );
+
+    if (result == 0) {
+        ctx.deinit();
+        return error.EncodingFailed;
+    }
+
+    return ctx.toOwnedSlice();
+}
+
+/// Encode a framebuffer region as JPEG with optional uniform downscale.
+pub fn encodeJpegRegion(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffer, quality: u8, x: u16, y: u16, w: u16, h: u16, scale: f32) ![]u8 {
+    var out_w: u16 = 0;
+    var out_h: u16 = 0;
+    const rgb = try snapshotRegionRgb(allocator, fb, x, y, w, h, scale, &out_w, &out_h);
+    defer allocator.free(rgb);
+    return encodeJpegRgb(allocator, rgb, out_w, out_h, quality);
+}
+
+/// Bilinear-free box resample: each output pixel averages the source box
+/// covering it (handles both down- and upscale adequately for previews).
+fn resizeBoxRgb(allocator: std.mem.Allocator, src: []const u8, sw: usize, sh: usize, dw: usize, dh: usize) ![]u8 {
+    const out = try allocator.alloc(u8, dw * dh * 3);
+    var oy: usize = 0;
+    while (oy < dh) : (oy += 1) {
+        const sy0 = oy * sh / dh;
+        const sy1 = @max(sy0 + 1, (oy + 1) * sh / dh);
+        var ox: usize = 0;
+        while (ox < dw) : (ox += 1) {
+            const sx0 = ox * sw / dw;
+            const sx1 = @max(sx0 + 1, (ox + 1) * sw / dw);
+            var acc = [3]u32{ 0, 0, 0 };
+            var n: u32 = 0;
+            var sy = sy0;
+            while (sy < sy1) : (sy += 1) {
+                var sx = sx0;
+                while (sx < sx1) : (sx += 1) {
+                    const o = (sy * sw + sx) * 3;
+                    acc[0] += src[o];
+                    acc[1] += src[o + 1];
+                    acc[2] += src[o + 2];
+                    n += 1;
+                }
+            }
+            const o = (oy * dw + ox) * 3;
+            out[o] = @intCast(acc[0] / n);
+            out[o + 1] = @intCast(acc[1] / n);
+            out[o + 2] = @intCast(acc[2] / n);
+        }
+    }
+    return out;
+}
+
 /// Encode a framebuffer as JPEG with a yellow marker drawn at (cx, cy)
 pub fn encodeJpegWithMarker(allocator: std.mem.Allocator, fb: *const rfb_client.Framebuffer, quality: u8, cx: u16, cy: u16) ![]u8 {
     const rgb = try fb.toRgb888(allocator);

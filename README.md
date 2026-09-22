@@ -24,6 +24,7 @@ Built in **Zig**. The MCP server runs on FreeBSD or Linux and communicates with 
 | Tool | Description |
 |------|-------------|
 | `vnc_screenshot` | Capture screen as JPEG with resolution metadata. Optional quality and delay. |
+| `vnc_capture_burst` | Capture a rapid frame sequence (1–30 frames, 50–5000 ms apart) in one call for transient UI states. Optional region crop, downscale, quality; per-frame timestamps included. |
 | `vnc_probe` | Place a yellow marker at coordinates on a screenshot *without* clicking or moving the mouse. |
 | `vnc_grid` | Overlay a labeled coordinate grid (A1–P12) on a screenshot with cell center coordinates. |
 | `vnc_click` | Click at (x,y) with visual confirmation screenshot. Left/right/middle, double-click. |
