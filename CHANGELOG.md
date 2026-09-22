@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — 0.10.0 (candidate)
+## [0.10.0] - 2026-09-21
 
 ### Added
 - **`vnc_calibrate` tool (#23)** — per-(client, endpoint, resolution) coordinate calibration. A calibration round places numbered markers at known framebuffer positions (`action=start`); the agent reports where each marker appears in the image *as displayed to it* (`action=submit`); a least-squares transform (fb = a·obs + b per axis) is solved with RMSE reported; above 4px a refine round places additional markers near the worst outliers (up to 5 rounds); `action=commit` persists to `~/.config/vnc-mcp/calibration.json` (atomic tmp+rename), `status`/`clear` inspect and delete. Records are valid indefinitely until re-calibrated.
@@ -9,6 +9,10 @@
 - **Calibration status notes in responses** — `vnc_screenshot`, `vnc_probe`, `vnc_grid`, and `vnc_click` responses carry a `Calibration:` line reflecting the requesting client's state (ACTIVE/STALE/ABSENT) for that endpoint and resolution.
 - **Client-conditioned tool descriptions** — `tools/list` now appends a calibration clause to the spatial tools' descriptions based on the requesting client's calibration state (schema is no longer served as a static blob).
 - **Client-conditioned `instructions`** — clients with saved calibrations receive instructions that drop the pre-calibration coordinate workarounds in favor of the calibrated-space contract.
+- **Upload byte verification (#22)** — `vnc_upload_file` compares the agent's reported byte count to the local file size and fails loudly on mismatch instead of reporting success for truncated files.
+
+### Fixed
+- **Helper connect hangs (~75s) when the agent is down** — `connect()` now uses non-blocking connect + kqueue `EVFILT_WRITE` with a 5s timeout instead of blocking on the kernel SYN retransmit chain. Agent-down helper calls now fail over to RFB input in ~5s instead of freezing the MCP session.
 
 ### Changed
 - The `initialize` instructions now state explicitly that clicks are inaccurate until calibration is done (uncalibrated clients).
