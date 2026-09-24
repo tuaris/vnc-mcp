@@ -339,6 +339,8 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolHelperClipboardSet(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_run_command")) {
         return toolRunCommand(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_shell")) {
+        return toolShell(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_screen_info")) {
         return toolScreenInfo(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_upload_file")) {
@@ -1378,6 +1380,51 @@ fn toolRunCommand(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         if (err == error.ReadTimeout) {
             const msg = std.fmt.allocPrint(allocator, "Command timed out after {d}ms. The command may still be running on the remote machine.", .{timeout_ms}) catch
+                return helperNotAvailable(allocator);
+            return textContent(allocator, msg);
+        }
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+/// vnc_shell — script execution on the target. shell="powershell" (default)
+/// runs in the agent's persistent PowerShell session: state ($variables,
+/// Set-Location, imported modules) survives across calls, PowerShell quoting
+/// is never mangled by cmd.exe, and repeat calls skip the 1-2s pwsh startup.
+/// shell="cmd" routes to the stateless run_command path instead.
+fn toolShell(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const script = getString(args, "script") orelse return error.InvalidArgument;
+
+    const shell = getString(args, "shell") orelse "powershell";
+    const is_powershell = std.mem.eql(u8, shell, "powershell");
+    if (!is_powershell and !std.mem.eql(u8, shell, "cmd")) {
+        return textContent(allocator, "Invalid shell — use \"powershell\" (persistent session) or \"cmd\" (stateless run_command)");
+    }
+
+    const timeout_ms: u32 = if (getInt(args, "timeout_ms")) |t|
+        @intCast(@max(1000, @min(t, 600000)))
+    else
+        60000;
+
+    // Agent-side work is bounded by timeout_ms; add radial margin for the
+    // round trip. Long pwsh timeouts need a wide socket window.
+    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 15;
+
+    const escaped = try helper.jsonEscape(allocator, script);
+    defer allocator.free(escaped);
+
+    const extra = if (is_powershell)
+        try std.fmt.allocPrint(allocator, "\"script\":\"{s}\",\"timeout_ms\":{d}", .{ escaped, timeout_ms })
+    else
+        try std.fmt.allocPrint(allocator, "\"cmd\":\"{s}\",\"timeout\":{d}", .{ escaped, timeout_ms });
+    defer allocator.free(extra);
+
+    const response = callHelperWithTimeout(allocator, arguments, if (is_powershell) "powershell_exec" else "run_command", extra, socket_timeout_secs) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        if (err == error.ReadTimeout) {
+            const msg = std.fmt.allocPrint(allocator, "Shell call timed out after {d}ms at the transport level. The agent may be stuck on the script.", .{timeout_ms}) catch
                 return helperNotAvailable(allocator);
             return textContent(allocator, msg);
         }

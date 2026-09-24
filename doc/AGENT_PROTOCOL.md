@@ -264,6 +264,75 @@ processes that inherit pipe handles.
   "stdout": "...", "stderr": "...", "exit_code": 0}}
 ```
 
+> **JSON string caveat (all commands):** the agent's flat parser decodes the
+> common escapes `\" \\ \n \r \t \/` but does NOT decode `\uXXXX`
+> sequences — the backslash is dropped and the rest passes through raw
+> (e.g. `$h\u00e9llo` becomes the literal text `$hu00e9llo`). Correct
+> clients send raw UTF-8 for non-ASCII (the MCP server does); authors of
+> other clients should disable ASCII escaping (`ensure_ascii=False` style).
+> Emitting `\u00XX` escapes for control characters (< 0x20) is still
+> required and correct.
+
+#### powershell_exec
+
+Run a script in the agent-owned persistent PowerShell session
+(`powershell.exe -NoProfile -NoLogo -NonInteractive -Command -`, spawned
+lazily on first use). State (variables, modules, working directory)
+persists across calls. stdout and stderr are merged into one stream,
+preserving ordering. End-of-output is synchronized with a sentinel line
+carrying `$LASTEXITCODE`.
+
+**Request:**
+```json
+{"command": "powershell_exec", "script": "Get-Location", "timeout_ms": 60000}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| script | string | yes | | Raw PowerShell; multi-line welcome; no shell quoting involved |
+| timeout_ms | int | no | 60000 | Max wait, clamped 1000–600000 |
+
+**Response:**
+```json
+{"status": "ok", "data": {
+  "output": "C:\\\r\n", "exit_code": null,
+  "elapsed_ms": 1480, "timed_out": false, "session_restarted": false}}
+```
+
+- `exit_code` is `$LASTEXITCODE` captured at end of script. PowerShell keeps
+  it sticky within the session: once any native command has run, later
+  pure-cmdlet calls report that same code. It is `null` only before the
+  first native command in the session's lifetime.
+- `timed_out: true` — the child was killed; it respawns lazily on the next
+  call. `output` holds whatever was captured before the deadline.
+- `session_restarted: true` — the previous session was dead and a new one
+  was spawned for this call; prior state is gone.
+
+-NonInteractive makes interactive prompts (`Read-Host`) fail fast instead
+of hanging the session.
+
+#### powershell_reset
+
+Kill and respawn the persistent session (after hangs, poisoned state,
+module conflicts).
+
+**Request:** `{"command": "powershell_reset"}`
+
+**Response:** `{"status": "ok", "data": {"restarted": true, "old_pid": 123, "pid": 456}}`
+
+#### powershell_state
+
+Session liveness and statistics.
+
+**Request:** `{"command": "powershell_state"}`
+
+**Response:**
+```json
+{"status": "ok", "data": {
+  "alive": true, "pid": 456, "uptime_ms": 38120,
+  "exec_count": 7, "cwd": "C:\\"}}
+```
+
 ---
 
 ### Screen
@@ -558,9 +627,11 @@ TextPattern (DocumentRange), then falls back to the Name property.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| name | string | no | Element name (exact match) |
+| name | string | no | Element name (exact match by default; see `match`) |
 | automation_id | string | no | Automation ID (exact match) |
 | control_type | string | no | Control type filter |
+| match | string | no | `"exact"` (default, full-string name match) or `"substring"` (case-insensitive partial name match) |
+| index | int | no | With multiple matches, select the index-th candidate (0-based) |
 
 At least one of `name` or `automation_id` must be specified.
 
@@ -569,6 +640,17 @@ At least one of `name` or `automation_id` must be specified.
 {"status": "ok", "data": {
   "text": "Hello world",
   "element": { "name": "...", "controlType": "Edit", ... }
+}}
+```
+
+**Ambiguous match (no index given):** nothing is read; the response
+enumerates candidates with bounding rectangles and returns `"text": null`.
+Retry with `index` or narrow via `control_type`/`automation_id`:
+```json
+{"status": "ok", "data": {
+  "reason": "ambiguous", "matches": 2,
+  "candidates": [ {"index": 0, "element": {...}}, ... ],
+  "text": null
 }}
 ```
 
@@ -588,7 +670,7 @@ Find an element and invoke its default action. Tries patterns in order:
  "control_type": "MenuItem"}
 ```
 
-Parameters are the same as `ui_element_text`.
+Parameters are the same as `ui_element_text`, including `match` and `index`.
 
 **Response:**
 ```json
@@ -597,6 +679,10 @@ Parameters are the same as `ui_element_text`.
   "element": { "name": "File", "controlType": "MenuItem", ... }
 }}
 ```
+
+**Ambiguous match (no index given):** fails closed — nothing is activated;
+the response is the candidates enumeration as in `ui_element_text` plus
+`"action": "none"`.
 
 Action values: `invoked`, `toggled`, `selected`, `expanded`,
 `collapsed`, `focused`, `none`.

@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **`vnc_shell` tool (requires WinMCP ≥ 0.6.0)** — `shell="powershell"` (default) runs `script` in the agent's persistent PowerShell session: `$variables`, `Set-Location`, and imported modules survive across calls, and PowerShell pipelines/quoting are never mangled by `cmd.exe` parsing. `shell="cmd"` routes to the stateless `run_command` path, which remains the escape hatch. Response data: merged `output`, `exit_code` (`$LASTEXITCODE` at end of script — sticky within a session, null only before any native command has run), `elapsed_ms`, `timed_out`, `session_restarted`. Tool deadline scales with `timeout_ms` (clamped 1000–600000) the same way `vnc_run_command` does.
+
+### Docs
+- **`doc/browser-control-decision.md`** — records the browser-control choice: direct Marionette client in C over the Firefox/Bloom remote agent (`:2828`) first; issue #15 (geckodriver/chromedriver REST proxy) kept open as the Chrome-capable fallback. Includes the source-verified correction that geckodriver contributes no input fidelity of its own (all click/action machinery lives in the browser's Marionette server) and that `navigator.webdriver` is true under both paths at runtime.
+
 ## [0.11.0] - 2026-09-23
 
 ### Added

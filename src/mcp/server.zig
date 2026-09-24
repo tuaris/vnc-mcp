@@ -405,9 +405,25 @@ pub const McpServer = struct {
 
     /// Compute the R6 timeout deadline for a tool call.
     /// vnc_run_command: respects its "timeout" argument (ms) + 10s margin.
+    /// vnc_shell: respects its "timeout_ms" argument (ms) + 20s margin.
     /// All other tools: 60s default (enough for SO_RCVTIMEO + error handling).
     fn computeToolDeadline(self: *McpServer, name: []const u8, arguments: ?JsonValue) u64 {
         _ = self;
+        if (std.mem.eql(u8, name, "vnc_shell")) {
+            if (arguments) |args| {
+                if (args == .object) {
+                    if (args.object.get("timeout_ms")) |t| {
+                        const ms: u64 = switch (t) {
+                            .integer => @intCast(@max(1000, @min(t.integer, 600000))),
+                            .float => @intFromFloat(@max(1000.0, @min(t.float, 600000.0))),
+                            else => 60000,
+                        };
+                        return (ms * std.time.ns_per_ms) + (20 * std.time.ns_per_s);
+                    }
+                }
+            }
+            return 80 * std.time.ns_per_s;
+        }
         if (std.mem.eql(u8, name, "vnc_run_command")) {
             // arguments is the tool's argument object: {"cmd": "...", "timeout": 90000}
             if (arguments) |args| {
