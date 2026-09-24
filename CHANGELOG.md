@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.12.0] - 2026-09-24
 
 ### Added
 - **`vnc_browser_eval` tool (requires WinMCP ≥ 0.6.0)** — evaluates JavaScript in the target's Firefox/Bloom browser over the Marionette remote agent (`localhost:2828`). Attaches to the browser the user is actually running (real profile, live state) — the Phase 8 path from `doc/browser-control-decision.md`. `context="content"` (default) targets the current tab; `context="chrome"` runs browser-privileged JS. Response: `error` (Marionette error object or null), `value` (script result as JSON), `elapsed_ms`. Per-call Marionette session (connect → NewSession → optional SetContext chrome → ExecuteScript), so no dangling browser state.
