@@ -1,9 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.11.0] - 2026-09-23
 
 ### Added
-- **`vnc_ui_click_element` / `vnc_ui_element_text` disambiguation (with WinMCP ≥ next)** — name matching is exact by default; new `match` ("exact"|"substring") and `index` params. Multiple matches without `index` now fail closed: no click happens and the response returns `matches` plus `candidates` with bounding rectangles; retry with `index` or aim `vnc_click` at a candidate rect. Drop: the stale "partial name matching may activate the WRONG element" instructions warning, replaced by the ambiguity rules.
+- **`vnc_ui_click_element` / `vnc_ui_element_text` disambiguation (requires WinMCP ≥ 0.5.2)** — name matching is exact by default; new `match` ("exact"|"substring") and `index` params. Multiple matches without `index` now fail closed: no click happens and the response returns `matches` plus `candidates` with bounding rectangles; retry with `index` or aim `vnc_click` at a candidate rect. Drop: the stale "partial name matching may activate the WRONG element" instructions warning, replaced by the ambiguity rules.
 - **`vnc_capture_burst` tool (#21)** — captures 1–30 frames at a fixed interval (50–5000 ms) in a single call for transient UI states (toasts, hover highlights, auto-dismissing dialogs) that outrun a screenshot round trip. RFB-efficient: one non-incremental baseline frame, then incremental update requests; between ticks the interval wait pumps arriving deltas via kqueue instead of blind sleeping. Frames are region-snapshotted (`region_*` params, framebuffer pixels) and uniformly downscaled (`scale`, default 0.5) at tick time — the framebuffer mutates in place — and JPEG-encoded afterwards; quality is automatically degraded if the response payload cap (6 MB raw JPEG) is exceeded. Response carries per-frame timestamps in ms from burst start. Validated live against freebsd-desktop: 200–500 ms pacing holds per-tick; an Applications-menu dropdown state was captured across consecutive frames mid-burst.
 
 ### Fixed
