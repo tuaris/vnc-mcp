@@ -170,8 +170,11 @@ pub const ResourceContent = struct {
 pub fn readResource(allocator: std.mem.Allocator, uri: []const u8) !ResourceContent {
     // vnc://screenshot or vnc://screenshot/{endpoint}
     if (std.mem.startsWith(u8, uri, "vnc://screenshot")) {
-        // VNC framebuffer (primary — DXGI agent has black-frame bug, disabled)
-        // TODO: re-enable tryAgentScreenshotResource once DXGI black-frame issue is resolved
+        // Prefer agent DXGI capture; fall back to RFB framebuffer (agent
+        // absent/error or black-frame guard).
+        if (tryAgentScreenshotResource(allocator)) |agent_res| {
+            return agent_res;
+        }
         const client = try getClient(null); // default endpoint
         const fb = try client.screenshot();
         const jpeg = try image.encodeJpeg(allocator, fb, 90);
@@ -214,6 +217,7 @@ fn tryAgentScreenshotResource(allocator: std.mem.Allocator) ?ResourceContent {
 
     const content_b64_ref = if (data.?.get("content")) |c| (if (c == .string) c.string else null) else null;
     if (content_b64_ref == null) return null;
+    if (isSuspiciouslyBlack(content_b64_ref.?)) return null;
 
     // Copy base64 content out of the parse arena (freed by deferred parsed.deinit)
     const content_b64 = allocator.dupe(u8, content_b64_ref.?) catch return null;
@@ -225,7 +229,7 @@ fn tryAgentScreenshotResource(allocator: std.mem.Allocator) ?ResourceContent {
         getScreenDims(allocator, null, &res_w, &res_h);
     }
 
-    const meta = std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ res_w, res_h }) catch return null;
+    const meta = std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels (WinMCP agent DXGI capture)", .{ res_w, res_h }) catch return null;
 
     return ResourceContent{
         .blob = content_b64,
@@ -391,8 +395,14 @@ fn toolScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
         std.Thread.sleep(delay_ms * std.time.ns_per_ms);
     }
 
-    // VNC framebuffer capture (primary — DXGI agent has black-frame bug, disabled)
-    // TODO: re-enable tryAgentScreenshot once DXGI black-frame issue is resolved
+    // Prefer the WinMCP agent's DXGI capture; fall back to RFB framebuffer
+    // when the agent is absent, errors, or returns a black frame (DXGI
+    // session-state pathology guard).
+    if (tryAgentScreenshot(allocator, arguments, quality)) |agent_result| {
+        return agent_result;
+    }
+
+    // VNC framebuffer capture (fallback and non-agent endpoints)
     const client = try getClient(arguments);
     const fb = try client.screenshot();
     const jpeg = try image.encodeJpeg(allocator, fb, quality);
@@ -548,6 +558,15 @@ fn toolCaptureBurst(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
 /// Try to capture a screenshot via the WinMCP agent's native DXGI backend.
 /// Returns null if the agent is unavailable, has no DLL, or the response
 /// can't be parsed — the caller should fall back to VNC framebuffer.
+/// Heuristic guard for the DXGI session-state pathology: an all-black
+/// 1918×968 JPEG at q≤90 is a few KB, a real desktop never under 32KB.
+/// False positives (legit dark screens) merely fall back to RFB, which
+/// returns the same pixels — never a wrong image.
+fn isSuspiciouslyBlack(content_b64: []const u8) bool {
+    const decoded_len = content_b64.len * 3 / 4;
+    return decoded_len < 32768;
+}
+
 fn tryAgentScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue, quality: u8) ?JsonValue {
     const params = std.fmt.allocPrint(allocator, "\"quality\":{d}", .{quality}) catch return null;
     defer allocator.free(params);
@@ -569,6 +588,7 @@ fn tryAgentScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue, quali
 
     const content_b64_ref = if (data.?.get("content")) |c| (if (c == .string) c.string else null) else null;
     if (content_b64_ref == null) return null;
+    if (isSuspiciouslyBlack(content_b64_ref.?)) return null;
 
     // Copy base64 content out of the parse arena (freed by deferred parsed.deinit)
     const content_b64 = allocator.dupe(u8, content_b64_ref.?) catch return null;
@@ -583,7 +603,10 @@ fn tryAgentScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue, quali
     }
 
     // Build MCP image content with pre-encoded base64 JPEG
-    const meta = std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels", .{ res_w, res_h }) catch return null;
+    const ep = getEndpoint(arguments) catch return null;
+    const cal_status = cal.statusLine(allocator, ep.id, @intCast(@max(0, @min(res_w, 65535))), @intCast(@max(0, @min(res_h, 65535))));
+    defer allocator.free(cal_status);
+    const meta = std.fmt.allocPrint(allocator, "Resolution: {d}x{d} pixels (WinMCP agent DXGI capture)\n{s}", .{ res_w, res_h, cal_status }) catch return null;
 
     var content_arr = std.json.Array.init(allocator);
 
