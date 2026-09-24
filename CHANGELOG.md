@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.13.0] - 2026-09-24
 
 ### Added
 - **Structured browser tools over the agent's shared long-lived Marionette session (requires WinMCP ≥ 0.7.0)** — `vnc_browser_navigate` (load a URL in the current tab; returns final url/title), `vnc_browser_find` (CSS selector default, plus `xpath`/`id`/`tag` strategies; `all=true` returns up to 64 handles instead of erroring on no match), `vnc_browser_click` / `vnc_browser_type` / `vnc_browser_text` (operate on handles from find), `vnc_browser_screenshot` (viewport PNG, or element PNG when a handle is passed), `vnc_browser_reset` (tear the session down; next op re-establishes), `vnc_browser_state` (alive, port, context, ages, cmd count, url/title probes). Element handles are session-scoped and round-trip across calls — multi-step find → click/type workflows no longer need hand-written JS. Handles die on navigation, on session re-establish (browser restart, 60-min idle reap, reset, mid-command reconnect — flagged via `session_established`), or DOM removal; reuse then errors with Marionette's own `stale element reference`. `vnc_browser_eval` stays the JS escape hatch: Marionette accepts only one client connection, so while the shared session is alive the agent transparently multiplexes eval onto it (fresh sandbox per script, envelope unchanged); with no shared session it uses its own per-call connection as before.
