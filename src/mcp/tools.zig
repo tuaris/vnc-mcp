@@ -343,6 +343,22 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolShell(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_browser_eval")) {
         return toolBrowserEval(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_browser_navigate")) {
+        return toolBrowserNavigate(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_browser_find")) {
+        return toolBrowserFind(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_browser_click")) {
+        return toolBrowserElemOp(allocator, arguments, "browser_click");
+    } else if (std.mem.eql(u8, name, "vnc_browser_type")) {
+        return toolBrowserType(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_browser_text")) {
+        return toolBrowserElemOp(allocator, arguments, "browser_text");
+    } else if (std.mem.eql(u8, name, "vnc_browser_screenshot")) {
+        return toolBrowserScreenshot(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_browser_reset")) {
+        return toolBrowserSimple(allocator, arguments, "browser_reset");
+    } else if (std.mem.eql(u8, name, "vnc_browser_state")) {
+        return toolBrowserSimple(allocator, arguments, "browser_state");
     } else if (std.mem.eql(u8, name, "vnc_screen_info")) {
         return toolScreenInfo(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_upload_file")) {
@@ -1462,6 +1478,185 @@ fn toolBrowserEval(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVal
     defer allocator.free(extra);
 
     const response = callHelperWithTimeout(allocator, arguments, "browser_eval", extra, socket_timeout_secs) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+/// Clamped browser op timeout (ms), shared by all vnc_browser_* tools.
+fn browserTimeoutMs(args: std.json.ObjectMap) u32 {
+    return if (getInt(args, "timeout_ms")) |t|
+        @intCast(@max(1000, @min(t, 120000)))
+    else
+        30000;
+}
+
+/// Navigate the browser's current tab to a URL. Shared long-lived
+/// Marionette session — establishes it on first use (response carries
+/// session_established). Requires WinMCP >= 0.7.0 on the target.
+fn toolBrowserNavigate(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const url = getString(args, "url") orelse return error.InvalidArgument;
+
+    const timeout_ms = browserTimeoutMs(args);
+    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 15;
+
+    const escaped = try helper.jsonEscape(allocator, url);
+    defer allocator.free(escaped);
+    const extra = try std.fmt.allocPrint(allocator, "\"url\":\"{s}\",\"timeout_ms\":{d}", .{ escaped, timeout_ms });
+    defer allocator.free(extra);
+
+    const response = callHelperWithTimeout(allocator, arguments, "browser_navigate", extra, socket_timeout_secs) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+/// Find element(s) in the current page. Returns element handles that
+/// round-trip into vnc_browser_click/type/text/screenshot. Handles die
+/// when the page navigates or the shared session is re-established.
+fn toolBrowserFind(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const using = getString(args, "using") orelse "css";
+    if (!std.mem.eql(u8, using, "css") and !std.mem.eql(u8, using, "xpath") and
+        !std.mem.eql(u8, using, "id") and !std.mem.eql(u8, using, "tag"))
+    {
+        return textContent(allocator, "Invalid using — use \"css\", \"xpath\", \"id\" or \"tag\"");
+    }
+    const value = getString(args, "value") orelse return error.InvalidArgument;
+    const all: u1 = if (getBool(args, "all")) 1 else 0;
+
+    const timeout_ms = browserTimeoutMs(args);
+    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 15;
+
+    const escaped = try helper.jsonEscape(allocator, value);
+    defer allocator.free(escaped);
+    const extra = try std.fmt.allocPrint(allocator, "\"using\":\"{s}\",\"value\":\"{s}\",\"all\":{d},\"timeout_ms\":{d}", .{ using, escaped, all, timeout_ms });
+    defer allocator.free(extra);
+
+    const response = callHelperWithTimeout(allocator, arguments, "browser_find", extra, socket_timeout_secs) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+/// Click an element or read its text (agent browser_click / browser_text).
+fn toolBrowserElemOp(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []const u8) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const element = getString(args, "element") orelse return error.InvalidArgument;
+
+    const timeout_ms = browserTimeoutMs(args);
+    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 15;
+
+    const escaped = try helper.jsonEscape(allocator, element);
+    defer allocator.free(escaped);
+    const extra = try std.fmt.allocPrint(allocator, "\"element\":\"{s}\",\"timeout_ms\":{d}", .{ escaped, timeout_ms });
+    defer allocator.free(extra);
+
+    const response = callHelperWithTimeout(allocator, arguments, command, extra, socket_timeout_secs) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+/// Type text into an element (focuses first). For special keys use
+/// vnc_browser_eval (escape hatch) until a keys API lands.
+fn toolBrowserType(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const element = getString(args, "element") orelse return error.InvalidArgument;
+    const text = getString(args, "text") orelse return error.InvalidArgument;
+
+    const timeout_ms = browserTimeoutMs(args);
+    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 15;
+
+    const esc_elem = try helper.jsonEscape(allocator, element);
+    defer allocator.free(esc_elem);
+    const esc_text = try helper.jsonEscape(allocator, text);
+    defer allocator.free(esc_text);
+    const extra = try std.fmt.allocPrint(allocator, "\"element\":\"{s}\",\"text\":\"{s}\",\"timeout_ms\":{d}", .{ esc_elem, esc_text, timeout_ms });
+    defer allocator.free(extra);
+
+    const response = callHelperWithTimeout(allocator, arguments, "browser_type", extra, socket_timeout_secs) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+/// Screenshot the browser viewport (no element) or one element. Returns
+/// an image content item (PNG) plus text metadata.
+fn toolBrowserScreenshot(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+
+    const timeout_ms = browserTimeoutMs(args);
+    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 15;
+
+    var extra: ?[]const u8 = null;
+    if (getString(args, "element")) |element| {
+        const escaped = try helper.jsonEscape(allocator, element);
+        defer allocator.free(escaped);
+        extra = try std.fmt.allocPrint(allocator, "\"element\":\"{s}\",\"timeout_ms\":{d}", .{ escaped, timeout_ms });
+    } else {
+        extra = try std.fmt.allocPrint(allocator, "\"timeout_ms\":{d}", .{timeout_ms});
+    }
+    defer if (extra) |e| allocator.free(e);
+
+    const response = callHelperWithTimeout(allocator, arguments, "browser_screenshot", extra, socket_timeout_secs) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        return helperNotAvailable(allocator);
+    };
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{ .ignore_unknown_fields = true }) catch {
+        return textContent(allocator, response);
+    };
+    defer parsed.deinit();
+
+    const root = if (parsed.value == .object) parsed.value.object else return textContent(allocator, response);
+    const status = if (root.get("status")) |s| (if (s == .string) s.string else null) else null;
+    if (status == null or !std.mem.eql(u8, status.?, "ok")) return textContent(allocator, response);
+
+    const data = if (root.get("data")) |d| (if (d == .object) d.object else null) else null;
+    if (data == null) return textContent(allocator, response);
+    const b64_ref = if (data.?.get("png_b64")) |c| (if (c == .string) c.string else null) else null;
+    if (b64_ref == null) return textContent(allocator, response);
+
+    // Copy out of the parse arena (freed by deferred parsed.deinit)
+    const b64 = try allocator.dupe(u8, b64_ref.?);
+    const is_elem = getBool(data.?, "element");
+    const elapsed: i64 = if (data.?.get("elapsed_ms")) |e| (if (e == .integer) e.integer else -1) else -1;
+    const established = getBool(data.?, "session_established");
+
+    const meta = try std.fmt.allocPrint(allocator, "Browser {s} screenshot (PNG){s}shared session re-established by this call: {s}", .{
+        if (is_elem) "element" else "viewport",
+        if (elapsed >= 0) try std.fmt.allocPrint(allocator, ", {d} ms; ", .{elapsed}) else "; ",
+        if (established) "yes — previously found element handles are now stale" else "no",
+    });
+
+    var content_arr = std.json.Array.init(allocator);
+
+    var text_item = std.json.ObjectMap.init(allocator);
+    try text_item.put("type", JsonValue{ .string = "text" });
+    try text_item.put("text", JsonValue{ .string = meta });
+    try content_arr.append(JsonValue{ .object = text_item });
+
+    var img_item = std.json.ObjectMap.init(allocator);
+    try img_item.put("type", JsonValue{ .string = "image" });
+    try img_item.put("data", JsonValue{ .string = b64 });
+    try img_item.put("mimeType", JsonValue{ .string = "image/png" });
+    try content_arr.append(JsonValue{ .object = img_item });
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("content", JsonValue{ .array = content_arr });
+    return JsonValue{ .object = result };
+}
+
+/// browser_reset / browser_state — no parameters beyond endpoint.
+fn toolBrowserSimple(allocator: std.mem.Allocator, arguments: ?JsonValue, command: []const u8) !JsonValue {
+    const response = callHelper(allocator, arguments, command, null) catch |err| {
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };

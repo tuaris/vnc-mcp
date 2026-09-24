@@ -60,6 +60,14 @@ Records are keyed `sha256(clientInfo.name | endpoint_id | WxH)` — stable acros
 | `vnc_run_command` | Execute a command via `cmd.exe /c`, return stdout/stderr/exit code. Configurable timeout. |
 | `vnc_shell` | Execute a script in a **persistent PowerShell session** on the agent (state, cwd, and modules survive across calls; no cmd.exe quoting problems), or pass `shell="cmd"` for the stateless run_command path. Returns merged output, exit code, elapsed ms, and `timed_out`/`session_restarted` flags. |
 | `vnc_browser_eval` | Evaluate JavaScript in the target's Firefox/Bloom browser via Marionette — attaches to the browser the user is actually running. `context="content"` (default) for the current tab, `context="chrome"` for browser-privileged JS. |
+| `vnc_browser_navigate` | Navigate the current tab to a URL. Returns final url/title and a `session_established` flag. |
+| `vnc_browser_find` | Find element(s) by CSS selector (default), XPath, id, or tag name. Returns element handles (session-scoped; die on navigation/session re-establish). |
+| `vnc_browser_click` | Trusted in-DOM click on an element handle from `vnc_browser_find`. |
+| `vnc_browser_type` | Type text into an element handle (focus + plain text; no special keys). |
+| `vnc_browser_text` | Read an element's rendered text content. |
+| `vnc_browser_screenshot` | PNG screenshot of the browser viewport, or of one element when a handle is given. |
+| `vnc_browser_reset` | Tear down the shared Marionette session (all element handles die; next op re-establishes). |
+| `vnc_browser_state` | Shared Marionette session diagnostics: alive, port, context, ages, command count, current URL/title. |
 | `vnc_screen_info` | Get monitor layout, resolution, and DPI. |
 | `vnc_upload_file` | Transfer a local file to the remote filesystem (max 10MB, base64 over TCP). |
 | `vnc_download_file` | Retrieve a file from the remote filesystem to local disk (max 10MB). |
