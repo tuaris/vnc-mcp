@@ -65,8 +65,8 @@ Records are keyed `sha256(clientInfo.name | endpoint_id | WxH)` — stable acros
 | `vnc_helper_clipboard_set` | Set Windows clipboard via Win32 API (full Unicode). Use with `vnc_key_press` Ctrl+V to paste. |
 | `vnc_ocr_region` | OCR a screen region using WinRT Windows.Media.Ocr via the native DLL. |
 | `vnc_ui_tree` | Get the accessibility tree of the foreground window (or by PID). Configurable depth. |
-| `vnc_ui_element_text` | Read text/value from a UI element by name or automation ID. |
-| `vnc_ui_click_element` | Invoke the default action on a UI element (click button, toggle checkbox, etc.). |
+| `vnc_ui_element_text` | Read text/value from a UI element by name or automation ID. Exact name match by default (`match="substring"` for partial); multi-match enumerates candidates with bounding rects, select via `index`. |
+| `vnc_ui_click_element` | Invoke the default action on a UI element (click button, toggle checkbox, etc.). Fails closed on name ambiguity — lists candidates with rects instead of activating the wrong one (`index` selects). |
 | `vnc_registry_read` | Read a Windows registry value (REG_SZ, REG_DWORD, REG_QWORD, REG_BINARY, etc.). |
 | `vnc_registry_write` | Write a registry value. Creates keys if needed. |
 | `vnc_registry_list` | Enumerate subkeys and values under a registry key. |

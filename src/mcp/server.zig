@@ -226,8 +226,8 @@ pub const McpServer = struct {
             "2. Before clicking, verify which window has focus via vnc_active_window.\n" ++
             "4. Use vnc_ocr_region to verify text content at coordinates before acting on assumptions.\n" ++
             "5. For window switching, use Alt+Tab or vnc_set_active_window — do NOT click taskbar buttons by guessing.\n" ++
-            "9. vnc_ui_click_element is UNRELIABLE for disambiguation — partial name matching may activate the WRONG element. " ++
-            "It returns empty data on success with no confirmation of what was clicked. Always verify with a screenshot after using it.\n" ++
+            "9. vnc_ui_click_element / vnc_ui_element_text match names EXACTLY by default (pass match=\"substring\" for case-insensitive partial match). " ++
+            "If multiple elements match, the tools act on nothing and return the match count plus candidate bounding rects — retry with index (0-based) or click a candidate rect's center via vnc_click.\n" ++
             "10. Helper tools (vnc_run_command, vnc_window_list, vnc_active_window, vnc_screen_info, vnc_ocr_region, vnc_list_processes, vnc_list_services, vnc_registry_read) provide authoritative system state — prefer them over visual guessing.";
 
         const instructions_uncalibrated =

@@ -1614,47 +1614,74 @@ fn toolUiTree(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     return textContent(allocator, response);
 }
 
+fn buildUiaExtra(allocator: std.mem.Allocator, args: std.json.ObjectMap) !?[]u8 {
+    var parts = std.ArrayList(u8){};
+    defer parts.deinit(allocator);
+
+    if (args.get("name")) |v| {
+        if (v == .string) {
+            const escaped = try helper.jsonEscape(allocator, v.string);
+            defer allocator.free(escaped);
+            const chunk = try std.fmt.allocPrint(allocator, "\"name\":\"{s}\"", .{escaped});
+            defer allocator.free(chunk);
+            try parts.appendSlice(allocator, chunk);
+        }
+    }
+    if (args.get("automation_id")) |v| {
+        if (v == .string) {
+            if (parts.items.len > 0) try parts.append(allocator, ',');
+            const escaped = try helper.jsonEscape(allocator, v.string);
+            defer allocator.free(escaped);
+            const chunk = try std.fmt.allocPrint(allocator, "\"automation_id\":\"{s}\"", .{escaped});
+            defer allocator.free(chunk);
+            try parts.appendSlice(allocator, chunk);
+        }
+    }
+    if (args.get("control_type")) |v| {
+        if (v == .string) {
+            if (parts.items.len > 0) try parts.append(allocator, ',');
+            const escaped = try helper.jsonEscape(allocator, v.string);
+            defer allocator.free(escaped);
+            const chunk = try std.fmt.allocPrint(allocator, "\"control_type\":\"{s}\"", .{escaped});
+            defer allocator.free(chunk);
+            try parts.appendSlice(allocator, chunk);
+        }
+    }
+    if (args.get("match")) |v| {
+        if (v == .string) {
+            if (parts.items.len > 0) try parts.append(allocator, ',');
+            const escaped = try helper.jsonEscape(allocator, v.string);
+            defer allocator.free(escaped);
+            const chunk = try std.fmt.allocPrint(allocator, "\"match\":\"{s}\"", .{escaped});
+            defer allocator.free(chunk);
+            try parts.appendSlice(allocator, chunk);
+        }
+    }
+    if (args.get("index")) |v| {
+        if (v == .integer) {
+            if (parts.items.len > 0) try parts.append(allocator, ',');
+            const chunk = try std.fmt.allocPrint(allocator, "\"index\":{d}", .{v.integer});
+            defer allocator.free(chunk);
+            try parts.appendSlice(allocator, chunk);
+        }
+    }
+
+    if (parts.items.len == 0) return null;
+    return try parts.toOwnedSlice(allocator);
+}
+
 fn toolUiElementText(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
 
     const name = getString(args, "name");
     const automation_id = getString(args, "automation_id");
-    const control_type = getString(args, "control_type");
 
     if (name == null and automation_id == null) return error.InvalidArgument;
 
-    // Build extra params
-    var parts = std.ArrayList(u8){};
-    defer parts.deinit(allocator);
+    const extra = try buildUiaExtra(allocator, args);
+    defer if (extra) |e| allocator.free(e);
 
-    if (name) |n| {
-        const escaped = try helper.jsonEscape(allocator, n);
-        defer allocator.free(escaped);
-        const chunk = try std.fmt.allocPrint(allocator, "\"name\":\"{s}\"", .{escaped});
-        defer allocator.free(chunk);
-        try parts.appendSlice(allocator, chunk);
-    }
-    if (automation_id) |aid| {
-        if (parts.items.len > 0) try parts.append(allocator, ',');
-        const escaped = try helper.jsonEscape(allocator, aid);
-        defer allocator.free(escaped);
-        const chunk = try std.fmt.allocPrint(allocator, "\"automation_id\":\"{s}\"", .{escaped});
-        defer allocator.free(chunk);
-        try parts.appendSlice(allocator, chunk);
-    }
-    if (control_type) |ct| {
-        if (parts.items.len > 0) try parts.append(allocator, ',');
-        const escaped = try helper.jsonEscape(allocator, ct);
-        defer allocator.free(escaped);
-        const chunk = try std.fmt.allocPrint(allocator, "\"control_type\":\"{s}\"", .{escaped});
-        defer allocator.free(chunk);
-        try parts.appendSlice(allocator, chunk);
-    }
-
-    const extra = try allocator.dupe(u8, parts.items);
-    defer allocator.free(extra);
-
-    const response = callHelper(allocator, arguments, "ui_element_text", extra) catch |err| {
+    const response = callHelper(allocator, arguments, "ui_element_text", extra orelse "") catch |err| {
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };
@@ -1666,42 +1693,13 @@ fn toolUiClickElement(allocator: std.mem.Allocator, arguments: ?JsonValue) !Json
 
     const name = getString(args, "name");
     const automation_id = getString(args, "automation_id");
-    const control_type = getString(args, "control_type");
 
     if (name == null and automation_id == null) return error.InvalidArgument;
 
-    // Build extra params
-    var parts = std.ArrayList(u8){};
-    defer parts.deinit(allocator);
+    const extra = try buildUiaExtra(allocator, args);
+    defer if (extra) |e| allocator.free(e);
 
-    if (name) |n| {
-        const escaped = try helper.jsonEscape(allocator, n);
-        defer allocator.free(escaped);
-        const chunk = try std.fmt.allocPrint(allocator, "\"name\":\"{s}\"", .{escaped});
-        defer allocator.free(chunk);
-        try parts.appendSlice(allocator, chunk);
-    }
-    if (automation_id) |aid| {
-        if (parts.items.len > 0) try parts.append(allocator, ',');
-        const escaped = try helper.jsonEscape(allocator, aid);
-        defer allocator.free(escaped);
-        const chunk = try std.fmt.allocPrint(allocator, "\"automation_id\":\"{s}\"", .{escaped});
-        defer allocator.free(chunk);
-        try parts.appendSlice(allocator, chunk);
-    }
-    if (control_type) |ct| {
-        if (parts.items.len > 0) try parts.append(allocator, ',');
-        const escaped = try helper.jsonEscape(allocator, ct);
-        defer allocator.free(escaped);
-        const chunk = try std.fmt.allocPrint(allocator, "\"control_type\":\"{s}\"", .{escaped});
-        defer allocator.free(chunk);
-        try parts.appendSlice(allocator, chunk);
-    }
-
-    const extra = try allocator.dupe(u8, parts.items);
-    defer allocator.free(extra);
-
-    const response = callHelper(allocator, arguments, "ui_click_element", extra) catch |err| {
+    const response = callHelper(allocator, arguments, "ui_click_element", extra orelse "") catch |err| {
         if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };
