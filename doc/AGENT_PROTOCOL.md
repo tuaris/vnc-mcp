@@ -335,6 +335,49 @@ Session liveness and statistics.
 
 ---
 
+### Browser Control
+
+#### browser_eval
+
+Evaluate JavaScript in the machine's Firefox/Bloom browser through the
+built-in Marionette remote agent (localhost:2828). The connection attaches
+to the browser the user is actually running — real profile, logged-in
+sessions, the same window visible over VNC. Each call runs a self-contained
+session: connect → `WebDriver:NewSession` → optional
+`Marionette:SetContext chrome` → `WebDriver:ExecuteScript` → disconnect.
+
+The browser must run with its remote agent enabled (launch flag
+`-marionette`, or pref `marionette.enabled=true`); Bloom dev profiles
+default on. Known limitation: the DANE cert-verify path (socket process)
+does not fire under Marionette — use interactive launches for TLS/DANE
+checks.
+
+**Request:**
+```json
+{"command": "browser_eval", "script": "return document.title",
+ "context": "content", "timeout_ms": 30000, "port": 2828}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| script | string | yes | | JS function body (W3C ExecuteScript semantics) — an explicit `return` yields the value |
+| context | string | no | `"content"` | `"content"` = current tab DOM; `"chrome"` = browser-privileged JS (`Services`, `ChromeUtils`) |
+| timeout_ms | int | no | 30000 | Clamped 1000–120000 |
+| port | int | no | 2828 | Marionette port |
+
+**Response:**
+```json
+{"status": "ok", "data": {
+  "error": null, "value": "Example Domain",
+  "context": "content", "elapsed_ms": 142}}
+```
+
+On script failure `error` is the Marionette error object
+(`{"error": "...", "message": "...", "stacktrace": "..."}`) and `value` is
+null; the outer status stays "ok" (the transport worked).
+
+---
+
 ### Screen
 
 #### screen_info

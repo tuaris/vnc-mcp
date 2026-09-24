@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **`vnc_browser_eval` tool (requires WinMCP ≥ 0.6.0)** — evaluates JavaScript in the target's Firefox/Bloom browser over the Marionette remote agent (`localhost:2828`). Attaches to the browser the user is actually running (real profile, live state) — the Phase 8 path from `doc/browser-control-decision.md`. `context="content"` (default) targets the current tab; `context="chrome"` runs browser-privileged JS. Response: `error` (Marionette error object or null), `value` (script result as JSON), `elapsed_ms`. Per-call Marionette session (connect → NewSession → optional SetContext chrome → ExecuteScript), so no dangling browser state.
 - **`vnc_shell` tool (requires WinMCP ≥ 0.6.0)** — `shell="powershell"` (default) runs `script` in the agent's persistent PowerShell session: `$variables`, `Set-Location`, and imported modules survive across calls, and PowerShell pipelines/quoting are never mangled by `cmd.exe` parsing. `shell="cmd"` routes to the stateless `run_command` path, which remains the escape hatch. Response data: merged `output`, `exit_code` (`$LASTEXITCODE` at end of script — sticky within a session, null only before any native command has run), `elapsed_ms`, `timed_out`, `session_restarted`. Tool deadline scales with `timeout_ms` (clamped 1000–600000) the same way `vnc_run_command` does.
 
 ### Docs

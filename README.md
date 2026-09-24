@@ -6,7 +6,7 @@ Built in **Zig**. The MCP server runs on FreeBSD or Linux and communicates with 
 
 ## Features
 
-- **38 MCP tools** — screen capture, mouse/keyboard input, clipboard, file transfer, UI automation, window management, process/service management, registry, command execution, persistent PowerShell session
+- **39 MCP tools** — screen capture, mouse/keyboard input, clipboard, file transfer, UI automation, window management, process/service management, registry, command execution, persistent PowerShell session, browser control (Marionette)
 - **Coordinate calibration** — `vnc_calibrate` measures how your IDE displays screenshots (scaled/cropped) once, saves the transform per (client, endpoint, resolution), and `coordinate_space="calibrated"` then lets you read click coordinates straight off returned images
 - **Visual click confirmation** — clicks return a screenshot with a yellow marker ring at the exact click point
 - **Coordinate grid** — `vnc_grid` overlays a labeled grid (A1–P12) and returns center coordinates for every cell
@@ -59,6 +59,7 @@ Records are keyed `sha256(clientInfo.name | endpoint_id | WxH)` — stable acros
 | `vnc_manage_window` | Minimize, maximize, restore, or close a window by title, class, or PID. |
 | `vnc_run_command` | Execute a command via `cmd.exe /c`, return stdout/stderr/exit code. Configurable timeout. |
 | `vnc_shell` | Execute a script in a **persistent PowerShell session** on the agent (state, cwd, and modules survive across calls; no cmd.exe quoting problems), or pass `shell="cmd"` for the stateless run_command path. Returns merged output, exit code, elapsed ms, and `timed_out`/`session_restarted` flags. |
+| `vnc_browser_eval` | Evaluate JavaScript in the target's Firefox/Bloom browser via Marionette — attaches to the browser the user is actually running. `context="content"` (default) for the current tab, `context="chrome"` for browser-privileged JS. |
 | `vnc_screen_info` | Get monitor layout, resolution, and DPI. |
 | `vnc_upload_file` | Transfer a local file to the remote filesystem (max 10MB, base64 over TCP). |
 | `vnc_download_file` | Retrieve a file from the remote filesystem to local disk (max 10MB). |

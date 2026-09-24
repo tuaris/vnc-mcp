@@ -341,6 +341,8 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolRunCommand(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_shell")) {
         return toolShell(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_browser_eval")) {
+        return toolBrowserEval(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_screen_info")) {
         return toolScreenInfo(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_upload_file")) {
@@ -1428,6 +1430,39 @@ fn toolShell(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
                 return helperNotAvailable(allocator);
             return textContent(allocator, msg);
         }
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+/// vnc_browser_eval — evaluate JavaScript in the target's browser via the
+/// agent's Marionette client (Phase 8 path; see doc/browser-control-decision.md).
+/// context="content" (default) targets the current tab, context="chrome"
+/// gives browser-privileged JS (Services, ChromeUtils). Requires the browser
+/// running with its remote agent (Firefox/Bloom -marionette, port 2828).
+fn toolBrowserEval(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
+    const script = getString(args, "script") orelse return error.InvalidArgument;
+
+    const context = getString(args, "context") orelse "content";
+    if (!std.mem.eql(u8, context, "content") and !std.mem.eql(u8, context, "chrome")) {
+        return textContent(allocator, "Invalid context — use \"content\" (current tab) or \"chrome\" (browser-privileged)");
+    }
+
+    const timeout_ms: u32 = if (getInt(args, "timeout_ms")) |t|
+        @intCast(@max(1000, @min(t, 120000)))
+    else
+        30000;
+    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 15;
+
+    const escaped = try helper.jsonEscape(allocator, script);
+    defer allocator.free(escaped);
+
+    const extra = try std.fmt.allocPrint(allocator, "\"script\":\"{s}\",\"context\":\"{s}\",\"timeout_ms\":{d}", .{ escaped, context, timeout_ms });
+    defer allocator.free(extra);
+
+    const response = callHelperWithTimeout(allocator, arguments, "browser_eval", extra, socket_timeout_secs) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
         return helperNotAvailable(allocator);
     };
     return textContent(allocator, response);
