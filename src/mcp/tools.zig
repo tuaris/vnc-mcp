@@ -477,9 +477,10 @@ fn toolCaptureBurst(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
     const client = try getClient(arguments);
 
     // Baseline: full non-incremental frame so every pixel is defined.
-    // syncFullFrame also consumes any straggler responses left in flight by
-    // previous tool calls — without it frame 0 could be a stale delta.
-    try client.syncFullFrame();
+    // syncSettledFrame also consumes any straggler responses left in flight
+    // by previous tool calls — without it frame 0 could be a stale delta —
+    // and retries past cold-server all-black responses.
+    const frame_ok = try client.syncSettledFrame();
     if (client.framebuffer == null) return error.FramebufferNotReady;
     const fb_w = client.framebuffer.?.width;
     const fb_h = client.framebuffer.?.height;
@@ -554,6 +555,9 @@ fn toolCaptureBurst(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
         try meta_buf.appendSlice(allocator, s);
     }
     try meta_buf.appendSlice(allocator, degrade_note);
+    if (!frame_ok) {
+        try meta_buf.appendSlice(allocator, "\nWARNING: framebuffer stayed all black through 4 sync attempts — the VNC server may be cold, locked, or not capturing the desktop.");
+    }
     try meta_buf.append(allocator, '\n');
     const ep = try getEndpoint(arguments);
     const status = cal.statusLine(allocator, ep.id, fb_w, fb_h);

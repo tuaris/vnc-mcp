@@ -559,6 +559,37 @@ pub const Client = struct {
         return error.ProtocolError;
     }
 
+    /// syncFullFrame plus a guard against cold-server blank frames: some
+    /// VNC servers (TightVNC-class, poll-driven mirror) answer a new or
+    /// long-idle client with an all-black frame until their desktop poll
+    /// cycle catches up with the newly attached client. A screenshot's long
+    /// multi-request exchange rides out the cold period, but a burst's
+    /// single quick baseline does not. If the synced framebuffer is all
+    /// black, wait and re-sync (3 retries). Returns false when the frame is
+    /// still all-black — the caller decides how to surface that.
+    pub fn syncSettledFrame(self: *Client) ClientError!bool {
+        var retries: u32 = 0;
+        while (true) {
+            try self.syncFullFrame();
+            if (!self.framebufferAllBlack()) return true;
+            if (retries >= 3) return false;
+            retries += 1;
+            std.Thread.sleep(300 * std.time.ns_per_ms);
+        }
+    }
+
+    /// True when every framebuffer pixel decodes to RGB black.
+    pub fn framebufferAllBlack(self: *Client) bool {
+        const fb = &(self.framebuffer orelse return false);
+        for (0..fb.height) |y| {
+            for (0..fb.width) |x| {
+                const px = fb.getPixelRgb(@intCast(x), @intCast(y));
+                if (px[0] != 0 or px[1] != 0 or px[2] != 0) return false;
+            }
+        }
+        return true;
+    }
+
     /// Best-effort: consume responses to requests still in flight so the
     /// connection returns quiescent — no unread bytes, nothing owed by the
     /// server — when a tool call ends. Bounded by budget_ms.
@@ -578,10 +609,11 @@ pub const Client = struct {
         // data using kqueue. This adapts to TightVNC's polling cycle —
         // returns as soon as the frame stabilizes instead of blind sleeping.
         //
-        // 1. Non-incremental request for baseline frame
+        // 1. Non-incremental request for baseline frame (with cold-server
+        //    all-black retry guard)
         // 2. Incremental requests to flush pending screen changes
         // 3. When no more data arrives within timeout, frame is current
-        try self.syncFullFrame();
+        _ = try self.syncSettledFrame();
 
         // Flush pending changes: request incremental updates until the
         // server has nothing new (kqueue timeout = frame is stable)
@@ -717,6 +749,34 @@ test "syncFullFrame skips stale straggler delta (burst first-frame regression)" 
     // (0,0) was overwritten, not used as the baseline.
     try std.testing.expectEqualSlices(u8, &full_pixels, conn.client.framebuffer.?.data);
     try std.testing.expectEqual(@as(usize, 0), conn.client.pending_updates.items.len);
+}
+
+test "syncSettledFrame retries past a cold all-black first frame" {
+    // Cold-server guard: first non-incremental response is a blank frame
+    // (server poll cycle hasn't caught the new client yet); the retry must
+    // fetch the real frame instead of handing the caller a black image.
+    const allocator = std.testing.allocator;
+    var conn = try testConnect(allocator, 4, 2);
+    defer conn.deinit();
+
+    const black = [_]u8{0} ** 32;
+    const real = [_]u8{0x7F} ** 32;
+    try writeUpdateMsg(conn.server, 0, 0, 4, 2, &black);
+    try writeUpdateMsg(conn.server, 0, 0, 4, 2, &real);
+
+    try std.testing.expect(try conn.client.syncSettledFrame());
+    try std.testing.expectEqualSlices(u8, &real, conn.client.framebuffer.?.data);
+}
+
+test "syncSettledFrame gives up with false on persistent black" {
+    const allocator = std.testing.allocator;
+    var conn = try testConnect(allocator, 4, 2);
+    defer conn.deinit();
+
+    const black = [_]u8{0} ** 32;
+    for (0..4) |_| try writeUpdateMsg(conn.server, 0, 0, 4, 2, &black);
+
+    try std.testing.expect(!try conn.client.syncSettledFrame());
 }
 
 test "drainInflight consumes owed responses and idle returns immediately" {
