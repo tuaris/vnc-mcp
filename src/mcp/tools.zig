@@ -476,9 +476,10 @@ fn toolCaptureBurst(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
 
     const client = try getClient(arguments);
 
-    // Baseline: full non-incremental frame so every pixel is defined
-    try client.requestUpdate(false);
-    try client.receiveUpdate();
+    // Baseline: full non-incremental frame so every pixel is defined.
+    // syncFullFrame also consumes any straggler responses left in flight by
+    // previous tool calls — without it frame 0 could be a stale delta.
+    try client.syncFullFrame();
     if (client.framebuffer == null) return error.FramebufferNotReady;
     const fb_w = client.framebuffer.?.width;
     const fb_h = client.framebuffer.?.height;
@@ -505,7 +506,7 @@ fn toolCaptureBurst(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
                 const remain = target - now;
                 if (remain <= 0) break;
                 if (client.waitForData(@intCast(@min(remain, 50)))) {
-                    client.receiveUpdate() catch break;
+                    _ = client.receiveUpdate() catch break;
                 }
             }
         }
@@ -513,6 +514,11 @@ fn toolCaptureBurst(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
         try snaps.append(allocator, try image.snapshotRegionRgb(allocator, fbp, rect[0], rect[1], rect[2], rect[3], scale, &snap_w, &snap_h));
         try stamps.append(allocator, @intCast(timer.read() / std.time.ns_per_ms));
     }
+
+    // The last tick's incremental request is usually still in flight here.
+    // Consume it (and anything else owed) so the next tool call starts from
+    // a quiescent connection instead of meeting a stale straggler.
+    client.drainInflight(200);
 
     // Encode; degrade quality if the payload cap (6MB raw, ~8MB base64) trips
     const payload_cap: usize = 6_000_000;
@@ -1850,10 +1856,10 @@ fn toolClipboardGet(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonVa
     // ServerCutText may arrive after a FramebufferUpdate response,
     // so we do two cycles with a delay to catch late clipboard messages.
     try client.requestUpdate(true);
-    try client.receiveUpdate();
+    _ = try client.receiveUpdate();
     std.Thread.sleep(300 * std.time.ns_per_ms);
     try client.requestUpdate(true);
-    try client.receiveUpdate();
+    _ = try client.receiveUpdate();
 
     if (client.getClipboard()) |text| {
         return textContent(allocator, text);

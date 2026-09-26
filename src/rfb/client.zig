@@ -134,6 +134,15 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     connected: bool = false,
     last_clipboard: ?[]u8 = null,
+    /// FIFO of outstanding FramebufferUpdateRequests (value = incremental
+    /// flag). RFB has no request/response correlation, but servers reply in
+    /// request order over the ordered TCP stream, so each received
+    /// FramebufferUpdate is mapped to the oldest unsatisfied request. This
+    /// lets a caller tell a full (non-incremental) response — which by
+    /// itself completely defines the frame — apart from a straggler delta
+    /// belonging to an earlier call, which must not be mistaken for a
+    /// fresh baseline.
+    pending_updates: std.ArrayList(bool) = .{},
 
     pub fn connect(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8) ClientError!Client {
         const stream = std.net.tcpConnectToHost(allocator, host, port) catch return error.ConnectionFailed;
@@ -167,6 +176,7 @@ pub const Client = struct {
             self.allocator.free(cb);
             self.last_clipboard = null;
         }
+        self.pending_updates.deinit(self.allocator);
         self.stream.close();
         self.connected = false;
     }
@@ -374,7 +384,9 @@ pub const Client = struct {
         }
     }
 
-    /// Request a full framebuffer update
+    /// Request a framebuffer update. The request is queued in
+    /// pending_updates so a later FramebufferUpdate response can be
+    /// classified as delta (incremental) or complete (non-incremental).
     pub fn requestUpdate(self: *Client, incremental: bool) ClientError!void {
         var msg: [10]u8 = undefined;
         msg[0] = @intFromEnum(protocol.ClientMessageType.framebuffer_update_request);
@@ -384,10 +396,23 @@ pub const Client = struct {
         std.mem.writeInt(u16, msg[6..8], self.width, .big);
         std.mem.writeInt(u16, msg[8..10], self.height, .big);
         try self.writeAll(&msg);
+        // Bound the queue; if it overflows the mapping has already desynced
+        // (server ignoring requests), so restart it — full-coverage detection
+        // in receiveUpdate keeps syncFullFrame correct regardless.
+        if (self.pending_updates.items.len >= 64) {
+            log.warn("pending update queue desynced, resetting", .{});
+            self.pending_updates.clearRetainingCapacity();
+        }
+        self.pending_updates.append(self.allocator, incremental) catch {};
     }
 
-    /// Read and process server messages until a full framebuffer update is received
-    pub fn receiveUpdate(self: *Client) ClientError!void {
+    /// Read and process server messages until a framebuffer update has been
+    /// applied. Returns true when the local framebuffer is afterwards a
+    /// complete frame — i.e. the update answered a non-incremental request
+    /// (per the pending_updates FIFO), or the received rects rewrote every
+    /// pixel, in which case prior state no longer matters. False means only
+    /// a delta was applied and older regions may predate this call.
+    pub fn receiveUpdate(self: *Client) ClientError!bool {
         while (true) {
             var msg_type_buf: [1]u8 = undefined;
             try self.readExact(&msg_type_buf);
@@ -396,8 +421,12 @@ pub const Client = struct {
 
             switch (msg_type) {
                 .framebuffer_update => {
-                    try self.handleFramebufferUpdate();
-                    return;
+                    const full_coverage = try self.handleFramebufferUpdate();
+                    const mapped_full = if (self.pending_updates.items.len > 0)
+                        !self.pending_updates.orderedRemove(0)
+                    else
+                        false;
+                    return full_coverage or mapped_full;
                 },
                 .set_colour_map_entries => {
                     try self.skipColourMapEntries();
@@ -416,18 +445,23 @@ pub const Client = struct {
         }
     }
 
-    fn handleFramebufferUpdate(self: *Client) ClientError!void {
+    /// Applies one FramebufferUpdate message. Returns true when the rects
+    /// cover the entire framebuffer (every pixel just rewritten).
+    fn handleFramebufferUpdate(self: *Client) ClientError!bool {
         var header: [3]u8 = undefined;
         try self.readExact(&header);
         // header[0] = padding
         const num_rects = std.mem.readInt(u16, header[1..3], .big);
 
         const fb = &(self.framebuffer orelse return error.FramebufferNotReady);
+        const full_area: u64 = @as(u64, fb.width) * @as(u64, fb.height);
+        var covered: u64 = 0;
 
         for (0..num_rects) |_| {
             var rect_buf: [12]u8 = undefined;
             try self.readExact(&rect_buf);
             const rect = protocol.RectHeader.decode(&rect_buf);
+            covered +|= @as(u64, rect.width) * @as(u64, rect.height);
 
             switch (rect.encoding) {
                 .raw => {
@@ -439,6 +473,8 @@ pub const Client = struct {
                 },
             }
         }
+
+        return covered >= full_area;
     }
 
     fn skipColourMapEntries(self: *Client) ClientError!void {
@@ -508,6 +544,34 @@ pub const Client = struct {
         return eventlist[0].data > 0;
     }
 
+    /// Synchronize the framebuffer with the server: request a full
+    /// (non-incremental) update and keep consuming updates until one is
+    /// received that completely defines the frame. Straggler responses to
+    /// requests still in flight from earlier tool calls are consumed first
+    /// (FIFO), so they can never be mistaken for a fresh baseline — this is
+    /// what kept the first frame of vnc_capture_burst stale (#21).
+    pub fn syncFullFrame(self: *Client) ClientError!void {
+        try self.requestUpdate(false);
+        var rounds: u32 = 0;
+        while (rounds < 16) : (rounds += 1) {
+            if (try self.receiveUpdate()) return;
+        }
+        return error.ProtocolError;
+    }
+
+    /// Best-effort: consume responses to requests still in flight so the
+    /// connection returns quiescent — no unread bytes, nothing owed by the
+    /// server — when a tool call ends. Bounded by budget_ms.
+    pub fn drainInflight(self: *Client, budget_ms: u32) void {
+        var timer = std.time.Timer.start() catch return;
+        while (self.pending_updates.items.len > 0) {
+            const elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
+            if (elapsed >= budget_ms) break;
+            if (!self.waitForData(budget_ms - elapsed)) break;
+            _ = self.receiveUpdate() catch break;
+        }
+    }
+
     /// Capture the current framebuffer as a screenshot
     pub fn screenshot(self: *Client) ClientError!*const Framebuffer {
         // Strategy: request incremental updates and wait for actual server
@@ -517,8 +581,7 @@ pub const Client = struct {
         // 1. Non-incremental request for baseline frame
         // 2. Incremental requests to flush pending screen changes
         // 3. When no more data arrives within timeout, frame is current
-        try self.requestUpdate(false);
-        try self.receiveUpdate();
+        try self.syncFullFrame();
 
         // Flush pending changes: request incremental updates until the
         // server has nothing new (kqueue timeout = frame is stable)
@@ -526,12 +589,12 @@ pub const Client = struct {
         while (rounds < 5) : (rounds += 1) {
             try self.requestUpdate(true);
             if (!self.waitForData(300)) break; // No data — frame is stable
-            try self.receiveUpdate();
+            _ = try self.receiveUpdate();
         }
 
         // Final non-incremental capture for a clean definitive frame
-        try self.requestUpdate(false);
-        try self.receiveUpdate();
+        try self.syncFullFrame();
+        self.drainInflight(100);
 
         return &(self.framebuffer orelse return error.FramebufferNotReady);
     }
@@ -574,3 +637,101 @@ pub const Client = struct {
         try self.writeAll(text);
     }
 };
+
+// --- Tests ---
+
+const TestConn = struct {
+    client: Client,
+    server: std.net.Stream,
+    listener: std.net.Server,
+
+    fn deinit(self: *TestConn) void {
+        self.client.disconnect();
+        self.server.close();
+        self.listener.deinit();
+    }
+};
+
+/// Loopback TCP pair standing in for a VNC server connection.
+fn testConnect(allocator: std.mem.Allocator, w: u16, h: u16) !TestConn {
+    const addr = try std.net.Address.parseIp4("127.0.0.1", 0);
+    var listener = try addr.listen(.{});
+    errdefer listener.deinit();
+
+    const server_side = try std.net.tcpConnectToAddress(listener.listen_address);
+    errdefer server_side.close();
+
+    const accepted = try listener.accept();
+    errdefer accepted.stream.close();
+
+    var client = Client{
+        .stream = accepted.stream,
+        .width = w,
+        .height = h,
+        .allocator = allocator,
+    };
+    client.framebuffer = try Framebuffer.init(allocator, w, h, protocol.PixelFormat.default_rgb888);
+    return .{ .client = client, .server = server_side, .listener = listener };
+}
+
+fn writeServer(s: std.net.Stream, bytes: []const u8) !void {
+    try s.writeAll(bytes);
+}
+
+/// Write a raw framebuffer_update server message: one rect + pixel bytes.
+fn writeUpdateMsg(s: std.net.Stream, x: u16, y: u16, w: u16, h: u16, pixels: []const u8) !void {
+    var msg: [16]u8 = undefined;
+    msg[0] = 0; // framebuffer_update
+    msg[1] = 0; // padding
+    std.mem.writeInt(u16, msg[2..4], 1, .big); // 1 rect
+    std.mem.writeInt(u16, msg[4..6], x, .big);
+    std.mem.writeInt(u16, msg[6..8], y, .big);
+    std.mem.writeInt(u16, msg[8..10], w, .big);
+    std.mem.writeInt(u16, msg[10..12], h, .big);
+    std.mem.writeInt(i32, msg[12..16], 0, .big); // raw encoding
+    try writeServer(s, &msg);
+    try writeServer(s, pixels);
+}
+
+test "syncFullFrame skips stale straggler delta (burst first-frame regression)" {
+    // Regression for vnc_capture_burst (#21): a previous tool call ended with
+    // an incremental request still owed by the server. Its response (a delta)
+    // must not be mistaken for the new non-incremental baseline — otherwise
+    // frame 0 snapshots a stale, partially-updated framebuffer.
+    const allocator = std.testing.allocator;
+    var conn = try testConnect(allocator, 4, 2);
+    defer conn.deinit();
+
+    // Previous call's leftover: an incremental request, still in flight.
+    try conn.client.requestUpdate(true);
+
+    // Server responses, in wire order: the stale delta answering the old
+    // request (1 pixel), then the full frame answering the new baseline.
+    try writeUpdateMsg(conn.server, 0, 0, 1, 1, &.{ 0xFF, 0x00, 0x00, 0x00 });
+    const full_pixels = [_]u8{0xAA} ** 32; // 4x2 px * 4bpp
+    try writeUpdateMsg(conn.server, 0, 0, 4, 2, &full_pixels);
+
+    try conn.client.syncFullFrame();
+
+    // Every pixel came from the fresh full frame; the stale 0xFF delta at
+    // (0,0) was overwritten, not used as the baseline.
+    try std.testing.expectEqualSlices(u8, &full_pixels, conn.client.framebuffer.?.data);
+    try std.testing.expectEqual(@as(usize, 0), conn.client.pending_updates.items.len);
+}
+
+test "drainInflight consumes owed responses and idle returns immediately" {
+    const allocator = std.testing.allocator;
+    var conn = try testConnect(allocator, 4, 2);
+    defer conn.deinit();
+
+    // Burst-tail shape: incremental request sent, response arrives late.
+    try conn.client.requestUpdate(true);
+    try writeUpdateMsg(conn.server, 0, 0, 1, 1, &.{ 0x55, 0x55, 0x55, 0x55 });
+
+    conn.client.drainInflight(1000);
+    try std.testing.expectEqual(@as(usize, 0), conn.client.pending_updates.items.len);
+
+    // Nothing owed: bounded by the kqueue timeout, consumes nothing.
+    conn.client.drainInflight(50);
+    try std.testing.expectEqual(@as(usize, 0), conn.client.pending_updates.items.len);
+}

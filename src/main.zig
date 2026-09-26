@@ -16,6 +16,12 @@ pub const mcp = struct {
     pub const server = mcp_server;
 };
 
+test {
+    // Lazy analysis: without explicit references, zig test discovers 0
+    // tests in imported files despite the re-exports above.
+    std.testing.refAllDeclsRecursive(@This());
+}
+
 const log = std.log.scoped(.main);
 
 pub const std_options: std.Options = .{

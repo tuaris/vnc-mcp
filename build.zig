@@ -49,6 +49,7 @@ pub fn build(b: *std.Build) void {
         .files = &.{"src/c/stb_impl.c"},
     });
     test_mod.addIncludePath(b.path("src/c"));
+    test_mod.linkSystemLibrary("crypto", .{});
 
     const unit_tests = b.addTest(.{
         .name = "vnc-mcp-server-tests",
