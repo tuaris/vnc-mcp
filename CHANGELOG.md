@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Stale first frame in `vnc_capture_burst` (and possibly the RFB `vnc_screenshot` fallback)** — burst ticks and screenshot flush-loop kqueue timeouts could retire a tool call with a server-owed response to an incremental `FramebufferUpdateRequest` still in flight. RFB has no request/response correlation, so the next call's non-incremental baseline blindly consumed that straggler delta: `receiveUpdate()` returned with a partially-stale framebuffer and frame 1 of the burst showed the screen as of the previous call. The client now keeps a FIFO of outstanding requests and treats a received update as a complete frame only when it answers a non-incremental request or its rects cover the whole framebuffer. New `Client.syncFullFrame()` drives all baselines (burst + `screenshot()`), consuming stragglers first; a bounded `Client.drainInflight()` at the end of burst/screenshot returns the pooled connection quiescent for the next call.
+
+### Tests
+- First real unit tests in the repo: a loopback-TCP fake-server regression test proving `syncFullFrame()` skips a stale straggler delta before the baseline (fails against the old pattern, which returns the stale frame), plus a `drainInflight()` coverage test. `main.zig` now pulls tests in via `refAllDeclsRecursive` (lazy analysis otherwise discovers zero tests in imported files), and the build `test` step links libcrypto like the exe module.
+
 ## [0.13.0] - 2026-09-24
 
 ### Added
