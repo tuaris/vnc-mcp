@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Compact tool definitions** — tightened tool and parameter descriptions and dropped ones that only restate the parameter name, cutting `tools/list` from ~10.1k to ~8.2k tokens. Each tool definition stays self-contained (e.g. every `endpoint` param states the default-endpoint fallback). Parameter names, types, and required lists are unchanged.
+
 ## [0.14.0] - 2026-09-26
 
 ### Added

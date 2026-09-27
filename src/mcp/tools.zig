@@ -2312,7 +2312,7 @@ fn withCalibrationStatus(allocator: std.mem.Allocator, arguments: ?JsonValue, ba
 fn calibrationClause(allocator: std.mem.Allocator) ![]u8 {
     const cid_opt = try cal.clientId(allocator);
     const cid = cid_opt orelse
-        return allocator.dupe(u8, "CALIBRATION: this client sent no identity (clientInfo.name) — calibrated coordinate mapping is unavailable; coordinates must be framebuffer pixels computed from the Resolution metadata.");
+        return allocator.dupe(u8, "CALIBRATION: unavailable (client sent no clientInfo.name); use framebuffer pixels computed from the Resolution metadata.");
     defer allocator.free(cid);
 
     if (!cal.isUsableClient(cid)) {
@@ -2324,9 +2324,9 @@ fn calibrationClause(allocator: std.mem.Allocator) ![]u8 {
     defer store.deinit();
 
     if (store.findAnyForClient(cid)) |_| {
-        return allocator.dupe(u8, "CALIBRATION: you have saved calibration record(s). For coordinate targeting pass coordinate_space=\"calibrated\" and read positions directly from returned images — no manual scaling. Records are per (client, endpoint, resolution); every spatial tool response carries a 'Calibration:' status line — honor it.");
+        return allocator.dupe(u8, "CALIBRATION: saved record(s) exist. Pass coordinate_space=\"calibrated\" with positions read directly from returned images. Honor the 'Calibration:' status line in each spatial tool response.");
     }
-    return allocator.dupe(u8, "CALIBRATION: NOT CALIBRATED. Image-space coordinate estimates ARE INACCURATE — either run vnc_calibrate (one-time per client/endpoint/resolution) or compute framebuffer coordinates from the Resolution metadata.");
+    return allocator.dupe(u8, "CALIBRATION: NOT CALIBRATED. Image-space estimates are inaccurate; run vnc_calibrate (once per client/endpoint/resolution) or compute framebuffer coordinates from the Resolution metadata.");
 }
 
 /// Append the calibration state clause to spatial tool descriptions.
