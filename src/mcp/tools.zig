@@ -341,6 +341,8 @@ pub fn handleTool(allocator: std.mem.Allocator, name: []const u8, arguments: ?Js
         return toolRunCommand(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_shell")) {
         return toolShell(allocator, arguments);
+    } else if (std.mem.eql(u8, name, "vnc_shell_state")) {
+        return toolShellState(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_browser_eval")) {
         return toolBrowserEval(allocator, arguments);
     } else if (std.mem.eql(u8, name, "vnc_browser_navigate")) {
@@ -1417,10 +1419,16 @@ fn toolRunCommand(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValu
 }
 
 /// vnc_shell — script execution on the target. shell="powershell" (default)
-/// runs in the agent's persistent PowerShell session: state ($variables,
-/// Set-Location, imported modules) survives across calls, PowerShell quoting
-/// is never mangled by cmd.exe, and repeat calls skip the 1-2s pwsh startup.
+/// runs in a persistent PowerShell session: state ($variables, Set-Location,
+/// imported modules) survives across calls, PowerShell quoting is never
+/// mangled by cmd.exe, and repeat calls skip the 1-2s pwsh startup.
 /// shell="cmd" routes to the stateless run_command path instead.
+///
+/// Sessions are named ("session" param, default "default"): each name is an
+/// independent PowerShell process, so concurrent agents/IDE windows never
+/// block each other as long as they use different names. A busy session no
+/// longer hangs the caller — the agent fails fast with a session_busy error
+/// (holder + script preview) unless wait_ms grants a bounded queue.
 fn toolShell(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     const args = if (arguments) |a| (if (a == .object) a.object else return error.InvalidArgument) else return error.InvalidArgument;
     const script = getString(args, "script") orelse return error.InvalidArgument;
@@ -1436,17 +1444,26 @@ fn toolShell(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
     else
         60000;
 
-    // Agent-side work is bounded by timeout_ms; add radial margin for the
-    // round trip. Long pwsh timeouts need a wide socket window.
-    const socket_timeout_secs: u32 = (timeout_ms / 1000) + 15;
+    const session = getString(args, "session") orelse "default";
+    if (session.len == 0 or session.len > 47) return error.InvalidArgument;
+
+    const wait_ms: u32 = if (getInt(args, "wait_ms")) |w|
+        @intCast(@max(0, @min(w, 600000)))
+    else
+        0;
+
+    // Agent-side work is bounded by timeout_ms + queue wait; add margin for
+    // the round trip. Long pwsh timeouts need a wide socket window.
+    const socket_timeout_secs: u32 = ((timeout_ms + wait_ms) / 1000) + 15;
 
     const escaped = try helper.jsonEscape(allocator, script);
     defer allocator.free(escaped);
 
-    const extra = if (is_powershell)
-        try std.fmt.allocPrint(allocator, "\"script\":\"{s}\",\"timeout_ms\":{d}", .{ escaped, timeout_ms })
-    else
-        try std.fmt.allocPrint(allocator, "\"cmd\":\"{s}\",\"timeout\":{d}", .{ escaped, timeout_ms });
+    const extra = if (is_powershell) blk: {
+        const escaped_session = try helper.jsonEscape(allocator, session);
+        defer allocator.free(escaped_session);
+        break :blk try std.fmt.allocPrint(allocator, "\"script\":\"{s}\",\"timeout_ms\":{d},\"session\":\"{s}\",\"wait_ms\":{d}", .{ escaped, timeout_ms, escaped_session, wait_ms });
+    } else try std.fmt.allocPrint(allocator, "\"cmd\":\"{s}\",\"timeout\":{d}", .{ escaped, timeout_ms });
     defer allocator.free(extra);
 
     const response = callHelperWithTimeout(allocator, arguments, if (is_powershell) "powershell_exec" else "run_command", extra, socket_timeout_secs) catch |err| {
@@ -1456,6 +1473,19 @@ fn toolShell(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
                 return helperNotAvailable(allocator);
             return textContent(allocator, msg);
         }
+        return helperNotAvailable(allocator);
+    };
+    return textContent(allocator, response);
+}
+
+/// vnc_shell_state — report every persistent PowerShell session the agent
+/// owns: name, pid, uptime, exec_count, and for busy ones the holder
+/// (client ip:port), held_ms, and a one-line preview of what it is running.
+/// Never blocks behind a running script.
+fn toolShellState(allocator: std.mem.Allocator, arguments: ?JsonValue) !JsonValue {
+    const response = callHelperWithTimeout(allocator, arguments, "powershell_state", "{}", 15) catch |err| {
+        if (err == error.FramebufferNotReady) return helperNotConfigured(allocator);
+        if (err == error.ReadTimeout) return textContent(allocator, "powershell_state timed out — agent not responding.");
         return helperNotAvailable(allocator);
     };
     return textContent(allocator, response);

@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.0] - 2026-09-26
+
+### Added
+- **`vnc_shell` named sessions + cross-client concurrency (requires WinMCP ≥ 0.8.0)** — `session` (default `"default"`) selects an independent persistent PowerShell process: concurrent clients on different names never block each other. `wait_ms` grants a bounded queue behind a busy holder; without it a busy session fails fast with a `session_busy` error naming the holder (client ip:port), how long it has held, and a preview of what it is running — no more whole-loop hangs from a long script in another IDE window.
+- **`vnc_shell_state` tool** — reports every PowerShell session the agent owns (name, pid, uptime, exec_count, cwd; busy sessions add holder/held_ms/script_preview). Never blocks behind a running script.
 
 ### Fixed
 - **Stale first frame in `vnc_capture_burst` (and possibly the RFB `vnc_screenshot` fallback)** — burst ticks and screenshot flush-loop kqueue timeouts could retire a tool call with a server-owed response to an incremental `FramebufferUpdateRequest` still in flight. RFB has no request/response correlation, so the next call's non-incremental baseline blindly consumed that straggler delta: `receiveUpdate()` returned with a partially-stale framebuffer and frame 1 of the burst showed the screen as of the previous call. The client now keeps a FIFO of outstanding requests and treats a received update as a complete frame only when it answers a non-incremental request or its rects cover the whole framebuffer. New `Client.syncFullFrame()` drives all baselines (burst + `screenshot()`), consuming stragglers first; a bounded `Client.drainInflight()` at the end of burst/screenshot returns the pooled connection quiescent for the next call.
