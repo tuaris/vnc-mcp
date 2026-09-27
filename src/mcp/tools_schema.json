@@ -1,11 +1,11 @@
 [
   {
     "name": "vnc_screenshot",
-    "description": "Capture the remote desktop as a JPEG. For click targeting prefer window positions from vnc_window_list/vnc_active_window and text from vnc_ocr_region over estimating from the image.",
+    "description": "Capture the remote desktop as a JPEG. The response includes 'Resolution: WxH' (framebuffer size); your view of the image may be scaled, so compute coordinates in framebuffer pixels from that resolution. For click targeting prefer window positions from vnc_window_list/vnc_active_window and text from vnc_ocr_region over estimating from the image.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"},
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"},
         "quality": {"type": "integer", "description": "JPEG quality; default 75", "minimum": 1, "maximum": 100},
         "delay": {"type": "integer", "description": "ms to wait before capture so the screen can settle; default 0", "minimum": 0, "maximum": 10000}
       }
@@ -17,7 +17,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"},
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"},
         "count": {"type": "integer", "description": "default 15", "minimum": 1, "maximum": 30},
         "interval_ms": {"type": "integer", "description": "ms between frames; default 333", "minimum": 50, "maximum": 5000},
         "quality": {"type": "integer", "description": "JPEG quality; default 60, auto-reduced if the payload cap is exceeded", "minimum": 1, "maximum": 100},
@@ -37,7 +37,7 @@
       "properties": {
         "x": {"type": "integer"},
         "y": {"type": "integer"},
-        "endpoint": {"type": "string"},
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"},
         "coordinate_source_resolution": {"type": "string", "description": "Resolution (WxH, e.g. \"1918x968\") copied from the vnc_screenshot/vnc_grid response the coordinates came from"},
         "coordinate_space": {"type": "string", "enum": ["framebuffer", "calibrated"], "description": "framebuffer (default): raw pixels matching the Resolution metadata. calibrated: positions as seen in the returned image, mapped via your saved vnc_calibrate record; errors without acting if no valid record exists."},
         "used_full_resolution": {"type": "boolean", "description": "true if estimated from the full-resolution image; false if it was scaled/cropped or you are unsure (then verify with vnc_grid)"},
@@ -48,13 +48,13 @@
   },
   {
     "name": "vnc_grid",
-    "description": "Overlay a labeled grid (columns A-P, rows 1-12) on a screenshot without touching the remote desktop. Returns the image plus each cell label's center pixel coordinate; click at a cell center. Faster than repeated probes.",
+    "description": "Overlay a labeled grid (columns A-P, rows 1-12) on a screenshot without touching the remote desktop. Returns the image plus each cell label's center in framebuffer pixels; click at a cell center. Faster than repeated probes.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "columns": {"type": "integer", "description": "default 8", "minimum": 2, "maximum": 16},
         "rows": {"type": "integer", "description": "default 6", "minimum": 2, "maximum": 12},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -69,7 +69,7 @@
         "coordinate_space": {"type": "string", "enum": ["framebuffer", "calibrated"], "description": "framebuffer (default): raw pixels matching the Resolution metadata. calibrated: positions as seen in the returned image, mapped via your saved vnc_calibrate record; errors without acting if no valid record exists."},
         "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "default left"},
         "double": {"type": "boolean", "description": "double-click; default false"},
-        "endpoint": {"type": "string"},
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"},
         "probe_validated": {"type": "boolean", "description": "true only if a vnc_probe marker at these exact coordinates was on the intended target"},
         "coordinates_confirmed": {"type": "boolean", "description": "true only after verifying via probe, grid, window position, or OCR"}
       },
@@ -83,7 +83,7 @@
       "type": "object",
       "properties": {
         "text": {"type": "string"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["text"]
     }
@@ -95,7 +95,7 @@
       "type": "object",
       "properties": {
         "keys": {"type": "string"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["keys"]
     }
@@ -109,7 +109,7 @@
         "x": {"type": "integer"},
         "y": {"type": "integer"},
         "coordinate_space": {"type": "string", "enum": ["framebuffer", "calibrated"], "description": "framebuffer (default): raw pixels matching the Resolution metadata. calibrated: positions as seen in the returned image, mapped via your saved vnc_calibrate record; errors without acting if no valid record exists."},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["x", "y"]
     }
@@ -125,7 +125,7 @@
         "x2": {"type": "integer"},
         "y2": {"type": "integer"},
         "coordinate_space": {"type": "string", "enum": ["framebuffer", "calibrated"], "description": "framebuffer (default): raw pixels matching the Resolution metadata. calibrated: positions as seen in the returned image, mapped via your saved vnc_calibrate record; errors without acting if no valid record exists."},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["x1", "y1", "x2", "y2"]
     }
@@ -140,7 +140,7 @@
         "y": {"type": "integer"},
         "coordinate_space": {"type": "string", "enum": ["framebuffer", "calibrated"], "description": "framebuffer (default): raw pixels matching the Resolution metadata. calibrated: positions as seen in the returned image, mapped via your saved vnc_calibrate record; errors without acting if no valid record exists."},
         "amount": {"type": "integer", "description": "wheel notches; positive scrolls up, negative down; typically -10 to 10"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["x", "y", "amount"]
     }
@@ -152,7 +152,7 @@
       "type": "object",
       "properties": {
         "text": {"type": "string"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["text"]
     }
@@ -164,14 +164,14 @@
       "type": "object",
       "properties": {
         "text": {"type": "string"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["text"]
     }
   },
   {
     "name": "vnc_list_endpoints",
-    "description": "List registered VNC endpoints with descriptions and connection status. Other tools take an optional endpoint ID from this list; the default endpoint is used when omitted.",
+    "description": "List registered VNC endpoints (IDs, descriptions, connection status, which is the default).",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -183,7 +183,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -193,7 +193,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -203,7 +203,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -216,7 +216,7 @@
         "title": {"type": "string", "description": "substring match"},
         "class": {"type": "string", "description": "exact match"},
         "pid": {"type": "integer"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -230,7 +230,7 @@
         "title": {"type": "string", "description": "substring match"},
         "class": {"type": "string", "description": "exact match"},
         "pid": {"type": "integer"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["action"]
     }
@@ -243,14 +243,14 @@
       "properties": {
         "cmd": {"type": "string"},
         "timeout": {"type": "integer", "description": "ms; default 30000", "minimum": 1000, "maximum": 300000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["cmd"]
     }
   },
   {
     "name": "vnc_shell",
-    "description": "Run a script on the remote Windows machine. Requires the vnc-helper agent. shell=powershell (default) uses a persistent PowerShell process per session name: variables, location, and modules persist across calls, with no cmd.exe quoting. shell=cmd is stateless cmd.exe /c. A busy session fails fast with session_busy (holder, script preview) unless wait_ms allows queuing; see vnc_shell_state. Interactive prompts fail (-NonInteractive). Returns output (stdout+stderr in order), exit_code ($LASTEXITCODE of the last native command, sticky per session, null until one has run), elapsed_ms, timed_out (process killed; respawns next call), session_restarted (previous session had died; its state is gone).",
+    "description": "Run a script on the remote Windows machine. Requires the vnc-helper agent. shell=powershell (default) uses a persistent PowerShell process per session name: variables, location, and modules persist across calls, with no cmd.exe quoting. shell=cmd is stateless cmd.exe /c. A busy session fails fast with session_busy (holder, script preview) unless wait_ms allows queuing; vnc_shell_state shows holders. Interactive prompts fail (-NonInteractive). Returns output (stdout+stderr in order), exit_code ($LASTEXITCODE of the last native command, sticky per session, null until one has run), elapsed_ms, timed_out (process killed; respawns next call), session_restarted (previous session had died; its state is gone).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -259,7 +259,7 @@
         "session": {"type": "string", "description": "default \"default\"; different names run concurrently without blocking"},
         "wait_ms": {"type": "integer", "description": "max wait for a busy session; default 0 (fail fast)", "minimum": 0, "maximum": 600000},
         "timeout_ms": {"type": "integer", "description": "default 60000", "minimum": 1000, "maximum": 600000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["script"]
     }
@@ -270,7 +270,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -283,7 +283,7 @@
         "script": {"type": "string", "description": "top-level return value is serialized back as JSON"},
         "context": {"type": "string", "enum": ["content", "chrome"]},
         "timeout_ms": {"type": "integer", "description": "default 30000", "minimum": 1000, "maximum": 120000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["script"]
     }
@@ -296,7 +296,7 @@
       "properties": {
         "url": {"type": "string"},
         "timeout_ms": {"type": "integer", "description": "page-load timeout; default 30000", "minimum": 1000, "maximum": 120000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["url"]
     }
@@ -311,7 +311,7 @@
         "value": {"type": "string", "description": "CSS selector, XPath, element id, or tag name per using"},
         "all": {"type": "boolean", "description": "default false"},
         "timeout_ms": {"type": "integer", "description": "default 30000", "minimum": 1000, "maximum": 120000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["value"]
     }
@@ -324,47 +324,47 @@
       "properties": {
         "element": {"type": "string"},
         "timeout_ms": {"type": "integer", "description": "default 30000", "minimum": 1000, "maximum": 120000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["element"]
     }
   },
   {
     "name": "vnc_browser_type",
-    "description": "Focus an element (input, textarea, contenteditable) by vnc_browser_find handle and type plain text. No special keys; use vnc_browser_eval or vnc_key_press for Enter, Tab, or shortcuts. Stale handles as in vnc_browser_click.",
+    "description": "Focus an element (input, textarea, contenteditable) by vnc_browser_find handle and type plain text. No special keys; use vnc_browser_eval or vnc_key_press for Enter, Tab, or shortcuts. On 'stale element reference', re-run vnc_browser_find.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "element": {"type": "string"},
         "text": {"type": "string"},
         "timeout_ms": {"type": "integer", "description": "default 30000", "minimum": 1000, "maximum": 120000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["element", "text"]
     }
   },
   {
     "name": "vnc_browser_text",
-    "description": "Read an element's rendered text by vnc_browser_find handle. For a form field's value use vnc_browser_eval. Stale handles as in vnc_browser_click.",
+    "description": "Read an element's rendered text by vnc_browser_find handle. For a form field's value use vnc_browser_eval. On 'stale element reference', re-run vnc_browser_find.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "element": {"type": "string"},
         "timeout_ms": {"type": "integer", "description": "default 30000", "minimum": 1000, "maximum": 120000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["element"]
     }
   },
   {
     "name": "vnc_browser_screenshot",
-    "description": "PNG screenshot of the target browser's viewport, or of one element if a vnc_browser_find handle is given. Observation only. For the full desktop use vnc_screenshot. Stale handles as in vnc_browser_click.",
+    "description": "PNG screenshot of the target browser's viewport, or of one element if a vnc_browser_find handle is given. Observation only. For the full desktop use vnc_screenshot. On 'stale element reference', re-run vnc_browser_find.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "element": {"type": "string"},
         "timeout_ms": {"type": "integer", "description": "default 30000", "minimum": 1000, "maximum": 120000},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -374,7 +374,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -384,7 +384,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -394,7 +394,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -406,7 +406,7 @@
       "properties": {
         "local_path": {"type": "string", "description": "absolute path on the MCP server host"},
         "remote_path": {"type": "string", "description": "absolute Windows path"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["local_path", "remote_path"]
     }
@@ -419,7 +419,7 @@
       "properties": {
         "remote_path": {"type": "string", "description": "absolute Windows path"},
         "local_path": {"type": "string", "description": "absolute path on the MCP server host"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["remote_path", "local_path"]
     }
@@ -430,12 +430,12 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "x": {"type": "integer", "description": "left edge"},
-        "y": {"type": "integer", "description": "top edge"},
+        "x": {"type": "integer", "description": "left edge, framebuffer px"},
+        "y": {"type": "integer", "description": "top edge, framebuffer px"},
         "w": {"type": "integer", "minimum": 1, "maximum": 4096},
         "h": {"type": "integer", "minimum": 1, "maximum": 4096},
         "lang": {"type": "string", "description": "e.g. \"en-US\", \"ja\"; default system language"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["x", "y", "w", "h"]
     }
@@ -446,7 +446,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -456,7 +456,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -467,7 +467,7 @@
       "type": "object",
       "properties": {
         "text": {"type": "string"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["text"]
     }
@@ -478,7 +478,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"},
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"},
         "depth": {"type": "integer", "description": "default 3; higher is slower", "minimum": 1, "maximum": 10},
         "pid": {"type": "integer", "description": "default: foreground window"}
       }
@@ -490,7 +490,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"},
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"},
         "name": {"type": "string", "description": "exact match unless match=substring"},
         "automation_id": {"type": "string", "description": "exact match; more reliable than name"},
         "control_type": {"type": "string", "description": "e.g. Button, Edit, Text, ComboBox, CheckBox, RadioButton, ListItem, TreeItem, MenuItem, Window"},
@@ -505,7 +505,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"},
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"},
         "name": {"type": "string", "description": "exact match unless match=substring"},
         "automation_id": {"type": "string", "description": "exact match; more reliable than name"},
         "control_type": {"type": "string", "description": "e.g. Button, CheckBox, RadioButton, MenuItem, ListItem, TreeItem"},
@@ -522,7 +522,7 @@
       "properties": {
         "key": {"type": "string", "description": "e.g. \"HKLM\\SOFTWARE\\Microsoft\"; roots HKLM, HKCU, HKCR, HKU, HKCC"},
         "value": {"type": "string", "description": "value name; default (Default)"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["key"]
     }
@@ -533,11 +533,11 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "key": {"type": "string", "description": "e.g. \"HKCU\\SOFTWARE\\MyApp\""},
+        "key": {"type": "string", "description": "e.g. \"HKCU\\SOFTWARE\\MyApp\"; roots HKLM, HKCU, HKCR, HKU, HKCC"},
         "value": {"type": "string", "description": "value name; default (Default)"},
         "type": {"type": "string", "description": "default REG_SZ", "enum": ["REG_SZ", "REG_DWORD", "REG_EXPAND_SZ"]},
         "data": {"description": "string, or integer for REG_DWORD"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["key", "data"]
     }
@@ -548,8 +548,8 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "key": {"type": "string", "description": "e.g. \"HKLM\\SOFTWARE\\Microsoft\""},
-        "endpoint": {"type": "string"}
+        "key": {"type": "string", "description": "e.g. \"HKLM\\SOFTWARE\\Microsoft\"; roots HKLM, HKCU, HKCR, HKU, HKCC"},
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["key"]
     }
@@ -560,7 +560,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -572,7 +572,7 @@
       "properties": {
         "pid": {"type": "integer"},
         "name": {"type": "string", "description": "e.g. \"notepad.exe\"; case-insensitive"},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -582,7 +582,7 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       }
     }
   },
@@ -594,7 +594,7 @@
       "properties": {
         "name": {"type": "string", "description": "service name, not display name (e.g. \"wuauserv\")"},
         "action": {"type": "string", "enum": ["start", "stop", "restart"]},
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["name", "action"]
     }
@@ -617,9 +617,9 @@
             },
             "required": ["id", "x", "y"]
           },
-          "description": "action=submit only"
+          "description": "required for action=submit"
         },
-        "endpoint": {"type": "string"}
+        "endpoint": {"type": "string", "description": "Endpoint ID; default endpoint if omitted"}
       },
       "required": ["action"]
     }
