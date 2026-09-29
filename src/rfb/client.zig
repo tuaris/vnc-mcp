@@ -303,7 +303,12 @@ pub const Client = struct {
 
         self.width = std.mem.readInt(u16, init_buf[0..2], .big);
         self.height = std.mem.readInt(u16, init_buf[2..4], .big);
-        const server_pf = protocol.PixelFormat.decode(init_buf[4..20]);
+        var server_pf = protocol.PixelFormat.decode(init_buf[4..20]);
+        if (server_ver.minor == 889) {
+            // Apple Remote Desktop quirk: the ServerInit pixel format claims
+            // big_endian=false, but pixels arrive big-endian on the wire.
+            server_pf.big_endian = true;
+        }
         log.info("server pixel format: {d}bpp depth={d} be={} tc={} rmax={d} gmax={d} bmax={d} rs={d} gs={d} bs={d}", .{
             server_pf.bits_per_pixel, server_pf.depth,      server_pf.big_endian, server_pf.true_colour,
             server_pf.red_max,        server_pf.green_max,  server_pf.blue_max,   server_pf.red_shift,

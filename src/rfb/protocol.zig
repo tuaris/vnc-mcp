@@ -4,7 +4,8 @@ const std = @import("std");
 
 pub const Version = struct {
     major: u8,
-    minor: u8,
+    // u16, not u8: Apple Remote Desktop reports minor 889 (RFB 003.889).
+    minor: u16,
 
     pub const v3_3 = Version{ .major = 3, .minor = 3 };
     pub const v3_7 = Version{ .major = 3, .minor = 7 };
@@ -15,7 +16,7 @@ pub const Version = struct {
         if (buf[7] != '.') return null;
         if (buf[11] != '\n') return null;
         const major = std.fmt.parseInt(u8, buf[4..7], 10) catch return null;
-        const minor = std.fmt.parseInt(u8, buf[8..11], 10) catch return null;
+        const minor = std.fmt.parseInt(u16, buf[8..11], 10) catch return null;
         return Version{ .major = major, .minor = minor };
     }
 
